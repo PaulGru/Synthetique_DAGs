@@ -177,8 +177,8 @@ def train_irm(
             return next(iters[e_idx])
 
     E = len(envs)
-    penalty_start_step = 500   # step à partir duquel la pénalité est activée
-    warmup_steps = 2500         # durée du warmup après ce step
+    penalty_start_step = 1500   # step à partir duquel la pénalité est activée
+    warmup_steps = 5000         # durée du warmup après ce step
 
     for t in range(steps):
         phi.train()
