@@ -4,8 +4,43 @@ from data_synth import (
     build_envs_selection,
     build_envs_semi_anti_causal,
 )
-from models_training import train_erm, train_irm, train_eirm
+from models_training import train_erm, train_irm
 from utils_irm import resolve_device
+import matplotlib.pyplot as plt
+import os
+
+def plot_history(history, title, filename):
+    steps = history['step']
+    loss = history['loss']
+    train_acc = history['train_acc']
+    val_acc = history['val_acc']
+    test_acc = history['test_acc']
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+    fig.suptitle(title)
+
+    # Plot Loss
+    ax1.plot(steps, loss, label='Train Loss')
+    ax1.set_xlabel('Steps')
+    ax1.set_ylabel('Loss')
+    ax1.set_title('Loss vs Steps')
+    ax1.legend()
+    ax1.grid(True)
+
+    # Plot Accuracy
+    ax2.plot(steps, train_acc, label='Train (ID) Acc')
+    ax2.plot(steps, val_acc, label='Val (ID) Acc')
+    ax2.plot(steps, test_acc, label='Test (OOD) Acc')
+    ax2.set_xlabel('Steps')
+    ax2.set_ylabel('Accuracy')
+    ax2.set_title('Accuracy vs Steps')
+    ax2.legend()
+    ax2.grid(True)
+
+    plt.tight_layout()
+    plt.savefig(filename)
+    print(f"Plot saved to {filename}")
+    plt.close()
 
 
 if __name__ == "__main__":
@@ -21,7 +56,7 @@ if __name__ == "__main__":
     p.add_argument('--val_frac', type=float, default=0.05, help='fraction validation pour toy')
 
     # ---- Hyperparams semi anti-causal ----
-    p.add_argument('--ps_train', type=float, nargs=2, default=[0.2, 0.1])
+    p.add_argument('--ps_train', type=float, nargs='+', default=[0.2, 0.1])
     p.add_argument('--p_test_ood', type=float, default=0.9)
         
     # ---- Hyperparams Confounding ----
@@ -50,24 +85,17 @@ if __name__ == "__main__":
 
     # Type de modèle
     p.add_argument('--model_kind', choices=['logreg', 'mlp'], default='mlp')
-    p.add_argument('--phi_kind', choices=['logreg', 'mlp'], default='mlp')
 
     # ERM
     p.add_argument('--erm_steps', type=int, default=1000)
     p.add_argument('--erm_lr', type=float, default=5e-5)
-    p.add_argument('--erm_batch', type=int, default=2048)
+    p.add_argument('--erm_batch', type=int, default=512)
 
     # IRM
     p.add_argument('--irm_steps', type=int, default=1000)
     p.add_argument('--irm_lr', type=float, default=1e-5)
     p.add_argument('--irm_lambda', type=float, default=7500.0)
-    p.add_argument('--irm_batch', type=int, default=2048)
-
-    # EIRM (IRM Games)
-    p.add_argument('--eirm_steps', type=int, default=5000)
-    p.add_argument('--eirm_lr', type=float, default=1e-4)
-    p.add_argument('--eirm_br_updates', type=int, default=1)
-    p.add_argument('--eirm_batch', type=int, default=2048)
+    p.add_argument('--irm_batch', type=int, default=512)
     
     args = p.parse_args()
 
@@ -85,7 +113,7 @@ if __name__ == "__main__":
         )
 
         # ===== ERM =====
-        erm = train_erm(
+        erm, erm_hist = train_erm(
             envs=train_envs, val_envs=val_envs, test_env=test_env,
             steps=args.erm_steps, lr=args.erm_lr,
             batch=args.erm_batch,
@@ -94,8 +122,9 @@ if __name__ == "__main__":
             model_kind=args.model_kind, mlp_hidden=256,
             mlp_layers=1, mlp_dropout=0.1, mlp_bn=False
         )
+        plot_history(erm_hist, f"ERM - {args.dataset}", "plot_erm.png")
         # ===== IRM =====
-        irm = train_irm(
+        irm, irm_hist = train_irm(
             envs=train_envs, val_envs=val_envs, test_env=test_env,
             steps=args.irm_steps, lr=args.irm_lr, irm_lambda=args.irm_lambda,
             batch=args.irm_batch,
@@ -104,18 +133,8 @@ if __name__ == "__main__":
             model_kind=args.model_kind, mlp_hidden=256,
             mlp_layers=1, mlp_dropout=0.1, mlp_bn=False
         )
-        # ===== EIRM =====
-        phi, heads = train_eirm(
-            envs_train=train_envs, envs_val=val_envs, test_env=test_env,
-            steps=args.eirm_steps, lr=args.eirm_lr,
-            br_updates=args.eirm_br_updates, batch=args.eirm_batch,
-            seed=args.seed, device=device,
-            eval_every=args.eval_every,
-            phi_kind=args.model_kind, mlp_hidden=256,
-            mlp_layers=1, mlp_dropout=0.1, mlp_bn=False
-        )
-
-
+        plot_history(irm_hist, f"IRM - {args.dataset}", "plot_irm.png")
+    
     elif args.dataset == 'synthetic_confounding':
         train_envs, val_envs, test_env = build_envs_confounding(
             n=args.n,
@@ -127,34 +146,25 @@ if __name__ == "__main__":
             n_test=args.n_test,
             label_flip=args.conf_label_flip,
         )
-
-        erm = train_erm(
+        erm, erm_hist = train_erm(
             envs=train_envs,
             steps=args.erm_steps, lr=args.erm_lr, batch=args.erm_batch,
             seed=args.seed, device=device,
             eval_every=args.eval_every, val_envs=val_envs, test_env=test_env,
             model_kind=args.model_kind, mlp_hidden=256, mlp_dropout=0.1, mlp_bn=False
         )
+        plot_history(erm_hist, f"ERM - {args.dataset}", "plot_erm.png")
 
-        irm = train_irm(
+        irm, irm_hist = train_irm(
             envs=train_envs,
             steps=args.irm_steps, lr=args.irm_lr, batch=args.irm_batch,
             irm_lambda=args.irm_lambda,
             seed=args.seed, device=device,
             eval_every=args.eval_every, val_envs=val_envs, test_env=test_env,
-            model_kind=args.phi_kind, mlp_hidden=256
+            model_kind=args.model_kind, mlp_hidden=256
         )
+        plot_history(irm_hist, f"IRM - {args.dataset}", "plot_irm.png")
 
-        phi, heads = train_eirm(
-            envs_train=train_envs, envs_val=val_envs, test_env=test_env,
-            steps=args.eirm_steps, lr=args.eirm_lr,
-            br_updates=args.eirm_br_updates, batch=args.eirm_batch,
-            seed=args.seed, device=device, eval_every=args.eval_every,
-            phi_kind=args.model_kind, mlp_hidden=256,
-            mlp_layers=1, mlp_dropout=0.1, mlp_bn=False
-        )
-
-        
     elif args.dataset == 'synthetic_selection':
         
         train_alphas = list(map(float, args.sel_alpha_train))
@@ -171,7 +181,7 @@ if __name__ == "__main__":
             label_flip=args.sel_label_flip,
         )
 
-        erm = train_erm(
+        erm, erm_hist = train_erm(
             envs=train_envs,
             steps=args.erm_steps, lr=args.erm_lr, batch=args.erm_batch,
             seed=args.seed, device=device,
@@ -179,21 +189,14 @@ if __name__ == "__main__":
             model_kind=args.model_kind, mlp_hidden=256,
             mlp_layers=1, mlp_dropout=0.1, mlp_bn=False
         )
+        plot_history(erm_hist, f"ERM - {args.dataset}", "plot_erm.png")
 
-        irm = train_irm(
+        irm, irm_hist = train_irm(
             envs=train_envs,
             steps=args.irm_steps, lr=args.irm_lr, batch=args.irm_batch,
             irm_lambda=args.irm_lambda,
             seed=args.seed, device=device,
             eval_every=args.eval_every, val_envs=val_envs, test_env=test_env,
-            model_kind=args.phi_kind, mlp_hidden=256
+            model_kind=args.model_kind, mlp_hidden=256
         )
-
-        phi, heads = train_eirm(
-            envs_train=train_envs, envs_val=val_envs, test_env=test_env,
-            steps=args.eirm_steps, lr=args.eirm_lr,
-            br_updates=args.eirm_br_updates, batch=args.eirm_batch,
-            seed=args.seed, device=device, eval_every=args.eval_every,
-            phi_kind=args.model_kind, mlp_hidden=256,
-            mlp_layers=1, mlp_dropout=0.1, mlp_bn=False
-        )
+        plot_history(irm_hist, f"IRM - {args.dataset}", "plot_irm.png")

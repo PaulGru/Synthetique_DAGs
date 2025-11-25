@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import torch
 from torch import nn
-from sklearn.metrics import accuracy_score
+# from sklearn.metrics import accuracy_score
 
 from data_synth import Env
 
@@ -41,7 +41,8 @@ def evaluate_binary(model: nn.Module, env: Env, device: str = "cpu"):
     probs = torch.sigmoid(logits).cpu().numpy().reshape(-1)
     y_true = env.y.cpu().numpy().reshape(-1)
     y_pred = (probs >= 0.5).astype(np.float32)
-    acc = accuracy_score(y_true, y_pred)
+    # acc = accuracy_score(y_true, y_pred)
+    acc = (y_true == y_pred).mean()
     return float(acc)
 
 

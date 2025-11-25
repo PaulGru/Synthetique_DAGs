@@ -1,29 +1,28 @@
 cd Classif_experimentale
 source .venv/bin/activate
 
-python main.py \
-  --dataset synthetic_semi_anti_causal \
-  --n 200000 \
-  --n_test 10000 \
-  --val_frac 0.1 \
-  \
-  --ps_train 0.1 0.2 \
-  --p_test_ood 0.9 \
-  --label_flip 0.25 \
-  \
-  --erm_steps 50 \
-  --erm_lr 1e-4 \
-  \
-  --irm_steps 50 \
-  --irm_lr 1e-4 \
-  --irm_lambda 750.0 \
-  \
-  --eirm_steps 50 \
-  --eirm_lr 1e-4 \
-  \
-  --model_kind mlp \
-  --phi_kind mlp \
-  --eval_every 5 \
+python main.py 
+  --dataset synthetic_semi_anti_causal 
+  --n 200000 
+  --val_frac 0.1 
+  
+  --ps_train 0.1 0.2 
+  --p_test_ood 0.9 
+  --label_flip 0.25 
+  
+  --erm_steps 5000 
+  --erm_lr 1e-4 
+  
+  --irm_steps 5000 
+  --irm_lr 1e-4 
+  --irm_lambda 750.0 
+  
+  --eirm_steps 50 
+  --eirm_lr 1e-4 
+  --eirm_lambda 10.0 
+  
+  --model_kind mlp
+  --eval_every 5 
   --device auto
 
 
@@ -31,31 +30,26 @@ python main.py \
 [IRM] step 5000 | loss=0.5730 | Train(ID): acc=0.713 | Val(ID): acc=0.931 | Test(OOD): acc=0.938
 
 
-python main.py \
-  --dataset synthetic_confounding \
-  --n 200000 \
-  --n_test 10000 \
-  --val_frac 0.1 \
-  \
-  --conf_a_train 0.1 0.2 \
-  --conf_a_test 0.9 \
-  --conf_w 1.5 \
-  --conf_label_flip 0.25 \
-  \
-  --erm_steps 50 \
-  --erm_lr 5e-4 \
-  \
-  --irm_steps 50 \
-  --irm_lr 5e-4 \
-  --irm_lambda 750.0 \
-  \
-  --eirm_steps 50 \
-  --eirm_lr 5e-4 \
-  --eirm_br_updates 1 \
-  \
-  --model_kind mlp \
-  --phi_kind mlp \
-  --eval_every 5 \
+python main.py 
+  --dataset synthetic_confounding 
+  --n 200000 
+  --n_test 10000 
+  --val_frac 0.1 
+  
+  --conf_a_train 0.1 0.2 
+  --conf_a_test 0.9 
+  --conf_w 1.5 
+  --conf_label_flip 0.25 
+  
+  --erm_steps 5000 
+  --erm_lr 5e-4 
+  
+  --irm_steps 5000 
+  --irm_lr 5e-4 
+  --irm_lambda 750.0 
+  
+  --model_kind logreg 
+  --eval_every 10
   --device auto
 
 
@@ -63,30 +57,26 @@ python main.py \
 [IRM] step 5000 | loss=0.5669 | Train(ID): acc=0.710 | Val(ID): acc=0.950 | Test(OOD): acc=0.970
 
 
-python main.py \
-  --dataset synthetic_selection \
-  --n 200000 \
-  --n_test 10000 \
-  --val_frac 0.1 \
-  \
-  --sel_alpha_train 7.0 5.0 \
-  --sel_alpha_test 6.0 \
-  --sel_w 1.0 \
-  --sel_label_flip 0.25 \
-  \
-  --erm_steps 2000 \
-  --erm_lr 2.5e-4 \
-  \
-  --irm_steps 2000 \
-  --irm_lr 2.5e-4 \
-  --irm_lambda 2500 \
-  \
-  --eirm \
-  --eirm_steps 2000 \
-  \
-  --model_kind logreg \
-  --phi_kind logreg \
-  --eval_every 50 \
+python main.py 
+  --dataset synthetic_selection 
+  --n 200000 
+  --n_test 10000 
+  --val_frac 0.1 
+  
+  --sel_alpha_train 7.0 5.0 
+  --sel_alpha_test 6.0 
+  --sel_w 1.0 
+  --sel_label_flip 0.25 
+  
+  --erm_steps 2000 
+  --erm_lr 2.5e-4 
+  
+  --irm_steps 2000 
+  --irm_lr 2.5e-4 
+  --irm_lambda 750 
+  
+  --model_kind logreg 
+  --eval_every 10 
   --device auto
 
 

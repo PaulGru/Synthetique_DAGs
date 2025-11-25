@@ -198,11 +198,15 @@ def build_envs_semi_anti_causal(
 
         (X_tr, y_tr), (X_val, y_val) = _split_numpy(Xc, Y, val_frac, seed + 1000 + i)
 
+        # On splitte Z de la même façon pour avoir le Z aligné avec X_tr
+        (Z_tr, _), (_, _) = _split_numpy(Z, Y, val_frac, seed + 1000 + i)
+
         meta_train = {
             "p_spur": p_spur,
             "label_flip": label_flip,
             "kind": "train",
             "env_id": i,
+            "Z": torch.from_numpy(Z_tr)
         }
         train_envs.append(Env(torch.from_numpy(X_tr), torch.from_numpy(y_tr), meta=meta_train))
 
@@ -214,7 +218,7 @@ def build_envs_semi_anti_causal(
             label_flip=0.0,
         )
         val_envs.append(Env(torch.from_numpy(Xc_val), torch.from_numpy(Y_val_clean),
-                            meta={"p_spur": p_spur, "label_flip": 0.0, "kind": "val"}))
+                            meta={"p_spur": p_spur, "label_flip": 0.0, "kind": "val", "Z": torch.from_numpy(Z_val)}))
 
     # Environnement de test OOD
     Xc_t, Y_t, Z_t = make_env_semi_anti_causal(
@@ -227,6 +231,7 @@ def build_envs_semi_anti_causal(
         "p_spur": test_p_spur,
         "label_flip": 0.0,
         "kind": "test",
+        "Z": torch.from_numpy(Z_t)
     }
     test_env = Env(torch.from_numpy(Xc_t), torch.from_numpy(Y_t), meta=meta_test)
 
@@ -242,9 +247,10 @@ def make_env_confounding(
     seed: int,
     a: float,             # intensité du lien C -> Z (varie avec l'env)
     w: float,             # poids de X_z dans Y
+    gamma: float = 2.0,   # poids du confondeur C dans Y
     *,
-    label_flip: float = 0.25,  # flip des labels seulement à l'entraînement
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    label_flip: float = 0.25,  # bruit de labels aléatoire
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Génère un environnement confounded avec Z binaire :
 
@@ -255,9 +261,9 @@ def make_env_confounding(
 
       X_y = gamma * Z + eps,  eps ~ N(0, sigma_y^2)   (feature spurieuse continue)
 
-      Y   = 1{ w * X_z > 0 } ∈ {0,1}
-
-      Y*  = Y \XOR C en entraînement, pas de C au test ou val
+      Y   = sign( w * X_z + gamma * (2C - 1) )
+      
+      Puis flip aléatoire avec proba label_flip.
 
       X   = [X_z, X_y]
     """
@@ -277,18 +283,21 @@ def make_env_confounding(
     eps_y = rng.normal(0.0, 0.3, size=(n, 1)).astype(np.float32)
     X_y = (2 * Z + eps_y).astype(np.float32)
 
-    # 5) Label Y = 1{ w * X_z > 0 }
-    Y = (w * X_z > 0.0).astype(np.float32)
+    # 5) Label Y = sign( w * X_z + gamma * (2C - 1) )
+    #    C est 0/1 -> 2C-1 est -1/+1
+    logit = w * X_z + gamma * (2 * C - 1.0)
+    Y = (logit > 0.0).astype(np.float32)
 
-    # 6) Flip symétrique des labels (train uniquement)
+    # 6) Flip aléatoire des labels (bruit standard)
     if label_flip and label_flip > 0.0:
-        Y = np.logical_xor(Y.astype(np.int32), C.astype(np.int32)).astype(np.float32)
+        flips = rng.uniform(0.0, 1.0, size=Y.shape) < label_flip
+        Y[flips] = 1.0 - Y[flips]
 
     # 7) Entrée modèle : X = [X_Z^{⊥}, X_Y^{⊥}]
     Xc = np.concatenate([X_z, X_y], axis=1).astype(np.float32)
 
     # On retourne aussi C (confondeur) pour debug/plots
-    return Xc, Y.astype(np.float32), C
+    return Xc, Y.astype(np.float32), Z.astype(np.float32), C
 
 
 
@@ -297,6 +306,7 @@ def build_envs_confounding(
     a_train: List[float],        # liste des a_e (beta^e) pour les environnements de TRAIN
     a_test: float,               # a_e (beta^e) pour l'environnement de TEST OOD
     w: float = 1.0,
+    gamma: float = 2.0,
     seed: int = 1,
     val_frac: float = 0.2,
     n_test: Optional[int] = None,
@@ -314,12 +324,10 @@ def build_envs_confounding(
         Z   = C XOR N^e
         X_y = (2 Z - 1) + ε_X,  ε_X ~ N(0, 0.5)
 
-      Y_base = 1{ w X_z > 0 }
-
-      - En TRAIN (label_flip > 0 dans make_env_confounding) :
-          Y <- Y_base XOR C, puis flip symétrique avec prob. label_flip.
-      - En VAL/TEST (label_flip = 0) :
-          Y <- Y_base (pas de confounding supplémentaire par C, pas de flip).
+      Y_base = sign( w X_z + gamma (2C-1) )
+      
+      - En TRAIN/VAL/TEST : flip aléatoire avec prob. label_flip (si > 0).
+        Note: on met souvent label_flip=0 en test pour évaluer la "vraie" fonction.
 
       X = [X_z, X_y].
 
@@ -336,64 +344,80 @@ def build_envs_confounding(
 
     for i, a_e in enumerate(a_train):
         # ===== TRAIN env i =====
-        Xc, Y, _C = make_env_confounding(
+        Xc, Y, Z, _C = make_env_confounding(
             n=n,
             seed=seed + i,
             a=a_e,
             w=w,
-            label_flip=label_flip,   # TRAIN : confounding + bruit de label
+            gamma=gamma,
+            label_flip=label_flip,
         )
 
         # On découpe ce jeu en train / val (val sera régénéré sans flip)
+        # Note: Z n'est pas splitté ici car on ne l'utilise pas pour l'entraînement standard
+        # Mais pour l'analyse, on voudrait le Z correspondant.
+        # Pour faire simple, on va stocker le Z complet dans les meta si besoin, 
+        # ou mieux : on splitte tout.
+        
         (X_tr, y_tr), (X_val_dummy, y_val_dummy) = _split_numpy(
             Xc, Y, val_frac, seed + 1000 + i
         )
+        # On splitte Z de la même façon pour avoir le Z aligné avec X_tr
+        (Z_tr, _), (_, _) = _split_numpy(Z, Y, val_frac, seed + 1000 + i)
+
         n_val = y_val_dummy.shape[0]
 
         meta_train = {
             "kind": "confounding",
             "a": float(a_e),
             "w": float(w),
+            "gamma": float(gamma),
             "label_flip": float(label_flip),
             "split": "train",
             "env_id": i,
+            "Z": torch.from_numpy(Z_tr) # Stockage de Z pour analyse
         }
         train_envs.append(
             Env(torch.from_numpy(X_tr), torch.from_numpy(y_tr), None, meta_train)
         )
 
         # ===== VAL env i : même a_e, mais sans confounding supplémentaire ni flip de label =====
-        X_val, Y_val, _C_val = make_env_confounding(
+        X_val, Y_val, Z_val, _C_val = make_env_confounding(
             n=n_val,
             seed=seed + 5000 + i,
             a=a_e,
             w=w,
-            label_flip=0.0,          # VAL : pas de XOR avec C, pas de flips
+            gamma=gamma,
+            label_flip=0.0,          # VAL : pas de bruit
         )
         meta_val = {
             **meta_train,
             "label_flip": label_flip,
             "split": "val",
+            "Z": torch.from_numpy(Z_val)
         }
         val_envs.append(
             Env(torch.from_numpy(X_val), torch.from_numpy(Y_val), None, meta_val)
         )
 
     # ===== TEST OOD =====
-    Xc_t, Y_t, _C_t = make_env_confounding(
+    Xc_t, Y_t, Z_t, _C_t = make_env_confounding(
         n=n_test,
         seed=seed + 777,
         a=a_test,
         w=w,
-        label_flip=0.0,              # TEST : pas de XOR avec C, pas de flips
+        gamma=gamma,
+        label_flip=0.0,              # TEST : pas de bruit
     )
     meta_t = {
         "kind": "confounding",
         "a": float(a_test),
         "w": float(w),
+        "gamma": float(gamma),
         "label_flip": label_flip,
         "split": "test_ood",
         "env_id": "test",
+        "Z": torch.from_numpy(Z_t)
     }
     test_env = Env(torch.from_numpy(Xc_t), torch.from_numpy(Y_t), None, meta_t)
 
@@ -403,22 +427,6 @@ def build_envs_confounding(
 
 # =============================================================================
 # 3) Selection bias — Causalité brisée par processus de sélection
-#     Processus génératif :
-#       Z              ~ Bernoulli(1/2)                 (variable de contexte)
-#       X_Z            ~ N(0, 1)                        (feature causale)
-#       ε_Y            ~ N(0, sigma_y^2)
-#       Y*             = sign( w * X_Z + ε_Y )          (label latent ∈ {-1,+1})
-#       Y              ∈ {0,1} obtenu via Y = 1{Y* > 0}
-#       (optionnel) flip(Y) avec prob label_flip        (bruit de label)
-#       ε_X            ~ N(0, sigma_x^2)
-#       X_Y^{⊥}        = γ * Z + ε_X                    (feature trompeuse)
-#
-#     Sélection spécifique à l'environnement e :
-#       S_e ~ Bernoulli( sigmoid( alpha_e * Z + Y* ) )
-#       On ne garde que les points avec S_e = 1 (ou S_e = 0 si keep_if_one=False).
-#
-#     -> P(Y | X_Z^{⊥}) est invariant dans la population de base,
-#        mais la corrélation entre X_Y^{⊥} et Y est induite par le processus de sélection.
 # =============================================================================
 def _sigmoid(x: np.ndarray) -> np.ndarray:
     return 1.0 / (1.0 + np.exp(-x))
@@ -475,19 +483,15 @@ def make_env_selection(
         Z = rng.binomial(1, 0.5, size=(B, 1)).astype(np.float32)  # contexte binaire
 
         Xz = rng.normal(0, 1.0, size=(B, 1)).astype(np.float32)  # X_Z^{⊥}
-        Y_latent = w * Xz
 
-        Y_star_sign = np.where(Y_latent > 0.0, 1.0, -1.0).astype(np.float32)  # ∈ {-1,+1}
-        Y = (Y_latent > 0.0).astype(np.float32)                                # ∈ {0,1}
+        Y = (w * Xz > 0.0).astype(np.float32)                                # ∈ {0,1}
 
         # Flip symétrique des labels (si demandé)
         if label_flip and label_flip > 0.0:
             flips = rng.uniform(size=Y.shape) < label_flip
             Y[flips] = 1.0 - Y[flips]
-            # on recalcule le signe cohérent avec le label observé
-            Y_star_sign = 2.0 * Y - 1.0
 
-        eps_X = rng.normal(0.0, 1.0, size=(B, 1)).astype(np.float32)
+        eps_X = rng.normal(0.0, 0.3, size=(B, 1)).astype(np.float32)
         Xy = (gamma * Z + eps_X).astype(np.float32)  # X_Y^{⊥}
 
         # --- Sélection à la CS-CMNIST ---
