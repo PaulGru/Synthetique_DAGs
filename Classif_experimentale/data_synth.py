@@ -259,7 +259,7 @@ def make_env_confounding(
 
       Z = C \XOR N^e,   N^e ~ Ber(beta^e), beta^e dans {0.1, 0.2, 0.9}
 
-      X_y = gamma * Z + eps,  eps ~ N(0, sigma_y^2)   (feature spurieuse continue)
+      X_y = 2 * Z + eps,  eps ~ N(0, sigma_y^2)   (feature spurieuse continue)
 
       Y   = sign( w * X_z + gamma * (2C - 1) )
       
@@ -279,7 +279,7 @@ def make_env_confounding(
     N_e = rng.binomial(1, a, size=(n, 1))  # {0,1}
     Z = np.logical_xor(C.astype(bool), N_e.astype(bool)).astype(np.float32)
 
-    # 4) Feature spurieuse X_Y^{⊥} = gamma * Z + eps, eps ~ N(0, sigma_y^2)
+    # 4) Feature spurieuse X_Y^{⊥} = 2 * Z + eps, eps ~ N(0, sigma_y^2)
     eps_y = rng.normal(0.0, 0.3, size=(n, 1)).astype(np.float32)
     X_y = (2 * Z + eps_y).astype(np.float32)
 
@@ -289,9 +289,9 @@ def make_env_confounding(
     Y = (logit > 0.0).astype(np.float32)
 
     # 6) Flip aléatoire des labels (bruit standard)
-    if label_flip and label_flip > 0.0:
-        flips = rng.uniform(0.0, 1.0, size=Y.shape) < label_flip
-        Y[flips] = 1.0 - Y[flips]
+    # if label_flip and label_flip > 0.0:
+    #     flips = rng.uniform(0.0, 1.0, size=Y.shape) < label_flip
+    #     Y[flips] = 1.0 - Y[flips]
 
     # 7) Entrée modèle : X = [X_Z^{⊥}, X_Y^{⊥}]
     Xc = np.concatenate([X_z, X_y], axis=1).astype(np.float32)

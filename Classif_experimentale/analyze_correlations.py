@@ -19,9 +19,9 @@ def analyze_correlations():
         conf_a_train = [0.1, 0.2]
         conf_a_test = 0.9
         conf_w = 1.5
-        conf_gamma = 10.0
+        conf_gamma = 2.0
         conf_label_flip = 0.25
-        seed = 1 # Default seed
+        seed = 1
 
         print("Generating data (Confounding) with parameters:")
         print(f"  n: {n}")
@@ -75,7 +75,7 @@ def analyze_correlations():
 
     all_envs = train_envs + [test_env]
 
-    print(f"{'Environment':<20} | {'Corr(Z, Y)':<12} | {'Corr(X_z, Y)':<12} | {'Corr(X_y, Y)':<12} | {'Acc(Z->Y)':<12} | {'Acc(X_z->Y)':<12} | {'Acc(X_y->Y)':<12}")
+    print(f"{'Environment':<20} | {'Corr(Z, Y)':<12} | {'Corr(X_z, Y)':<12} | {'Corr(X_y, Y)':<12}")
     print("-" * 110)
 
     for env, name in zip(all_envs, env_names):
@@ -92,23 +92,7 @@ def analyze_correlations():
         corr_xz_y = np.corrcoef(X_z, Y)[0, 1]
         corr_xy_y = np.corrcoef(X_y, Y)[0, 1]
 
-        # Predictive Power (Logistic Regression)
-        # Z -> Y
-        clf_z = LogisticRegression(solver='lbfgs')
-        clf_z.fit(Z.reshape(-1, 1), Y)
-        acc_z = accuracy_score(Y, clf_z.predict(Z.reshape(-1, 1)))
-
-        # X_z -> Y
-        clf_xz = LogisticRegression(solver='lbfgs')
-        clf_xz.fit(X_z.reshape(-1, 1), Y)
-        acc_xz = accuracy_score(Y, clf_xz.predict(X_z.reshape(-1, 1)))
-
-        # X_y -> Y
-        clf_xy = LogisticRegression(solver='lbfgs')
-        clf_xy.fit(X_y.reshape(-1, 1), Y)
-        acc_xy = accuracy_score(Y, clf_xy.predict(X_y.reshape(-1, 1)))
-
-        print(f"{name:<20} | {corr_z_y:<12.4f} | {corr_xz_y:<12.4f} | {corr_xy_y:<12.4f} | {acc_z:<12.4f} | {acc_xz:<12.4f} | {acc_xy:<12.4f}")
+        print(f"{name:<20} | {corr_z_y:<12.4f} | {corr_xz_y:<12.4f} | {corr_xy_y:<12.4f}")
 
 if __name__ == "__main__":
     analyze_correlations()

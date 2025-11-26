@@ -40,8 +40,6 @@ def plot_history(history, title, filename):
     plt.tight_layout()
     plt.savefig(filename)
     print(f"Plot saved to {filename}")
-    plt.savefig(filename)
-    print(f"Plot saved to {filename}")
     plt.close()
 
 
@@ -124,6 +122,10 @@ if __name__ == "__main__":
     args = p.parse_args()
 
     device = resolve_device(args.device)
+    
+    # Créer le dossier pour les plots
+    plot_dir = "plot"
+    os.makedirs(plot_dir, exist_ok=True)
 
     if args.dataset == 'synthetic_semi_anti_causal':
         train_envs, val_envs, test_env = build_envs_semi_anti_causal(
@@ -144,8 +146,8 @@ if __name__ == "__main__":
             model_kind=args.model_kind, mlp_hidden=256,
             mlp_layers=1, mlp_dropout=0.1, mlp_bn=False
         )
-        plot_history(erm_hist, f"ERM - {args.dataset}", "plot_erm.png")
-        plot_weights(erm_hist, f"ERM - {args.dataset}", "weights_erm.png")
+        plot_history(erm_hist, f"ERM - {args.dataset}", os.path.join(plot_dir, "plot_erm.png"))
+        plot_weights(erm_hist, f"ERM - {args.dataset}", os.path.join(plot_dir, "weights_erm.png"))
         # ===== IRM =====
         irm, irm_hist = train_irm(
             envs=train_envs, val_envs=val_envs, test_env=test_env,
@@ -154,8 +156,8 @@ if __name__ == "__main__":
             irm_lambda=args.irm_lambda, model_kind=args.model_kind, mlp_hidden=256,
             mlp_layers=1, mlp_dropout=0.1, mlp_bn=False
         )
-        plot_history(irm_hist, f"IRM - {args.dataset}", "plot_irm.png")
-        plot_weights(irm_hist, f"IRM - {args.dataset}", "weights_irm.png")
+        plot_history(irm_hist, f"IRM - {args.dataset}", os.path.join(plot_dir, "plot_irm.png"))
+        plot_weights(irm_hist, f"IRM - {args.dataset}", os.path.join(plot_dir, "weights_irm.png"))
     
     elif args.dataset == 'synthetic_confounding':
         train_envs, val_envs, test_env = build_envs_confounding(
@@ -174,7 +176,8 @@ if __name__ == "__main__":
             seed=args.seed, device=device, eval_every=args.eval_every,
             model_kind=args.model_kind, mlp_hidden=256, mlp_dropout=0.1, mlp_bn=False
         )
-        plot_history(erm_hist, f"ERM - {args.dataset}", "plot_erm.png")
+        plot_history(erm_hist, f"ERM - {args.dataset}", os.path.join(plot_dir, "plot_erm.png"))
+        plot_weights(erm_hist, f"ERM - {args.dataset}", os.path.join(plot_dir, "weights_erm.png"))
 
         irm, irm_hist = train_irm(
             envs=train_envs, val_envs=val_envs, test_env=test_env,
@@ -184,7 +187,8 @@ if __name__ == "__main__":
             eval_every=args.eval_every,
             model_kind=args.model_kind, mlp_hidden=256
         )
-        plot_history(irm_hist, f"IRM - {args.dataset}", "plot_irm.png")
+        plot_history(irm_hist, f"IRM - {args.dataset}", os.path.join(plot_dir, "plot_irm.png"))
+        plot_weights(irm_hist, f"IRM - {args.dataset}", os.path.join(plot_dir, "weights_irm.png"))
 
     elif args.dataset == 'synthetic_selection':
         
@@ -210,7 +214,8 @@ if __name__ == "__main__":
             model_kind=args.model_kind, mlp_hidden=256,
             mlp_layers=1, mlp_dropout=0.1, mlp_bn=False
         )
-        plot_history(erm_hist, f"ERM - {args.dataset}", "plot_erm.png")
+        plot_history(erm_hist, f"ERM - {args.dataset}", os.path.join(plot_dir, "plot_erm.png"))
+        plot_weights(erm_hist, f"ERM - {args.dataset}", os.path.join(plot_dir, "weights_erm.png"))
 
         irm, irm_hist = train_irm(
             envs=train_envs,
@@ -220,4 +225,5 @@ if __name__ == "__main__":
             eval_every=args.eval_every, val_envs=val_envs, test_env=test_env,
             model_kind=args.model_kind, mlp_hidden=256
         )
-        plot_history(irm_hist, f"IRM - {args.dataset}", "plot_irm.png")
+        plot_history(irm_hist, f"IRM - {args.dataset}", os.path.join(plot_dir, "plot_irm.png"))
+        plot_weights(irm_hist, f"IRM - {args.dataset}", os.path.join(plot_dir, "weights_irm.png"))

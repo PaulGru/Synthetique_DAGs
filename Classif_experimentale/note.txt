@@ -17,33 +17,24 @@ python main.py
   --eval_every 5
   --device auto
   --seed 34
-  
 
-python main.py 
-  --dataset synthetic_confounding 
-  --n 200000 
-  --n_test 10000 
-  --val_frac 0.1 
-  
-  --conf_a_train 0.1 0.2 
-  --conf_a_test 0.9 
-  --conf_w 1.5 
-  --conf_label_flip 0.25 
-  
-  --erm_steps 5000 
-  --erm_lr 5e-4 
-  
-  --irm_steps 5000 
-  --irm_lr 5e-4 
-  --irm_lambda 750.0 
-  
-  --model_kind logreg 
+
+python main.py
+  --dataset synthetic_confounding
+  --n 200000
+  --n_test 10000
+  --val_frac 0.1
+  --conf_a_train 0.1 0.2
+  --conf_a_test 0.9
+  --conf_w 1.5
+  --erm_steps 45000
+  --erm_lr 5e-3
+  --irm_steps 45000
+  --irm_lr 5e-3
+  --irm_lambda 50.0
+  --model_kind logreg
   --eval_every 10
   --device auto
-
-
-[ERM] step 5000 | loss=0.3820 | Train(ID): acc=0.845 | Val(ID): acc=0.679 | Test(OOD): acc=0.315
-[IRM] step 5000 | loss=0.5669 | Train(ID): acc=0.710 | Val(ID): acc=0.950 | Test(OOD): acc=0.970
 
 
 python main.py 
