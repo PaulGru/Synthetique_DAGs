@@ -40,6 +40,30 @@ def plot_history(history, title, filename):
     plt.tight_layout()
     plt.savefig(filename)
     print(f"Plot saved to {filename}")
+    plt.savefig(filename)
+    print(f"Plot saved to {filename}")
+    plt.close()
+
+
+def plot_weights(history, title, filename):
+    steps = history['step']
+    w_z = history.get('w_z', [])
+    w_y = history.get('w_y', [])
+
+    if not w_z or not w_y:
+        print("No weights to plot.")
+        return
+
+    plt.figure(figsize=(8, 5))
+    plt.plot(steps, w_z, label='w_z (Causal)', color='green')
+    plt.plot(steps, w_y, label='w_y (Spurious)', color='red')
+    plt.xlabel('Steps')
+    plt.ylabel('Weight Value')
+    plt.title(f'Evolution of Weights - {title}')
+    plt.legend()
+    plt.grid(True)
+    plt.savefig(filename)
+    print(f"Weights plot saved to {filename}")
     plt.close()
 
 
@@ -115,25 +139,23 @@ if __name__ == "__main__":
         # ===== ERM =====
         erm, erm_hist = train_erm(
             envs=train_envs, val_envs=val_envs, test_env=test_env,
-            steps=args.erm_steps, lr=args.erm_lr,
-            batch=args.erm_batch,
-            seed=args.seed, device=device,
-            eval_every=args.eval_every, 
+            steps=args.erm_steps, lr=args.erm_lr, batch=args.erm_batch,
+            seed=args.seed, device=device, eval_every=args.eval_every,  
             model_kind=args.model_kind, mlp_hidden=256,
             mlp_layers=1, mlp_dropout=0.1, mlp_bn=False
         )
         plot_history(erm_hist, f"ERM - {args.dataset}", "plot_erm.png")
+        plot_weights(erm_hist, f"ERM - {args.dataset}", "weights_erm.png")
         # ===== IRM =====
         irm, irm_hist = train_irm(
             envs=train_envs, val_envs=val_envs, test_env=test_env,
-            steps=args.irm_steps, lr=args.irm_lr, irm_lambda=args.irm_lambda,
-            batch=args.irm_batch,
-            seed=args.seed, device=device,
-            eval_every=args.eval_every,  
-            model_kind=args.model_kind, mlp_hidden=256,
+            steps=args.irm_steps, lr=args.irm_lr, batch=args.irm_batch,
+            seed=args.seed, device=device, eval_every=args.eval_every,
+            irm_lambda=args.irm_lambda, model_kind=args.model_kind, mlp_hidden=256,
             mlp_layers=1, mlp_dropout=0.1, mlp_bn=False
         )
         plot_history(irm_hist, f"IRM - {args.dataset}", "plot_irm.png")
+        plot_weights(irm_hist, f"IRM - {args.dataset}", "weights_irm.png")
     
     elif args.dataset == 'synthetic_confounding':
         train_envs, val_envs, test_env = build_envs_confounding(
@@ -147,20 +169,19 @@ if __name__ == "__main__":
             label_flip=args.conf_label_flip,
         )
         erm, erm_hist = train_erm(
-            envs=train_envs,
+            envs=train_envs, val_envs=val_envs, test_env=test_env,
             steps=args.erm_steps, lr=args.erm_lr, batch=args.erm_batch,
-            seed=args.seed, device=device,
-            eval_every=args.eval_every, val_envs=val_envs, test_env=test_env,
+            seed=args.seed, device=device, eval_every=args.eval_every,
             model_kind=args.model_kind, mlp_hidden=256, mlp_dropout=0.1, mlp_bn=False
         )
         plot_history(erm_hist, f"ERM - {args.dataset}", "plot_erm.png")
 
         irm, irm_hist = train_irm(
-            envs=train_envs,
+            envs=train_envs, val_envs=val_envs, test_env=test_env,
             steps=args.irm_steps, lr=args.irm_lr, batch=args.irm_batch,
             irm_lambda=args.irm_lambda,
             seed=args.seed, device=device,
-            eval_every=args.eval_every, val_envs=val_envs, test_env=test_env,
+            eval_every=args.eval_every,
             model_kind=args.model_kind, mlp_hidden=256
         )
         plot_history(irm_hist, f"IRM - {args.dataset}", "plot_irm.png")

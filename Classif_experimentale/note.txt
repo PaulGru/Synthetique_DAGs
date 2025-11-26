@@ -1,34 +1,23 @@
 cd Classif_experimentale
 source .venv/bin/activate
 
-python main.py 
-  --dataset synthetic_semi_anti_causal 
-  --n 200000 
-  --val_frac 0.1 
-  
-  --ps_train 0.1 0.2 
-  --p_test_ood 0.9 
-  --label_flip 0.25 
-  
-  --erm_steps 5000 
-  --erm_lr 1e-4 
-  
-  --irm_steps 5000 
-  --irm_lr 1e-4 
-  --irm_lambda 750.0 
-  
-  --eirm_steps 50 
-  --eirm_lr 1e-4 
-  --eirm_lambda 10.0 
-  
-  --model_kind mlp
-  --eval_every 5 
+python main.py
+  --dataset synthetic_semi_anti_causal
+  --n 200000
+  --val_frac 0.1
+  --ps_train 0.1 0.2
+  --p_test_ood 0.9
+  --label_flip 0.25
+  --erm_steps 45000
+  --erm_lr 1e-3
+  --irm_steps 45000
+  --irm_lr 5e-3
+  --irm_lambda 25.0
+  --model_kind logreg
+  --eval_every 5
   --device auto
-
-
-[ERM] step 5000 | loss=0.3397 | Train(ID): acc=0.850 | Val(ID): acc=0.845 | Test(OOD): acc=0.100
-[IRM] step 5000 | loss=0.5730 | Train(ID): acc=0.713 | Val(ID): acc=0.931 | Test(OOD): acc=0.938
-
+  --seed 34
+  
 
 python main.py 
   --dataset synthetic_confounding 

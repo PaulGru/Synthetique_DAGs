@@ -71,7 +71,7 @@ def train_erm(
     model_kind: str = "mlp",
     mlp_hidden: int = 256, mlp_layers: int = 1, mlp_dropout: float = 0.1, mlp_bn: bool = False
 ):
-    history = {'step': [], 'loss': [], 'train_acc': [], 'val_acc': [], 'test_acc': []}
+    history = {'step': [], 'loss': [], 'train_acc': [], 'val_acc': [], 'test_acc': [], 'w_z': [], 'w_y': []}
 
     torch.manual_seed(seed)
     device = torch.device(resolve_device(device))
@@ -108,19 +108,42 @@ def train_erm(
         loss = bce(logits, yb)
         opt.zero_grad(); loss.backward(); opt.step()
 
+        # Learning rate scheduling
+        if t == 10000: #7500
+            for pg in opt.param_groups: pg['lr'] = 1e-3
+        elif t == 20000: #15000
+            for pg in opt.param_groups: pg['lr'] = 5e-4
+        elif t == 30000: #22500
+            for pg in opt.param_groups: pg['lr'] = 1e-4
+        elif t == 40000: #30000
+            for pg in opt.param_groups: pg['lr'] = 5e-5
+
         if eval_every and ((t+1) % eval_every == 0) and (val_envs is not None) and (test_env is not None):
             # Eval
             train_acc = compute_accuracy(model, envs)
             val_acc = compute_accuracy(model, val_envs) if val_envs else 0.0
             test_acc = compute_accuracy(model, [test_env]) if test_env else 0.0
-            
+    
             history['step'].append(t+1)
             history['loss'].append(loss.item())
             history['train_acc'].append(train_acc)
             history['val_acc'].append(val_acc)
             history['test_acc'].append(test_acc)
 
+            if isinstance(model, LogisticReg):
+                w = model.linear.weight.detach().cpu().numpy()[0]
+                history['w_z'].append(float(w[0]))
+                history['w_y'].append(float(w[1]))
+            else:
+                history['w_z'].append(0.0)
+                history['w_y'].append(0.0)
+
             evaluate_and_log_step("ERM", t+1, model, envs, val_envs, test_env, device=str(device), loss_val=float(loss.item()))
+
+    if isinstance(model, LogisticReg):
+        w = model.linear.weight.detach().cpu().numpy()[0]
+        b = model.linear.bias.detach().cpu().item()
+        print(f"[ERM] Final weights: w_z (causal) = {w[0]:.4f}, w_y (spurious) = {w[1]:.4f}, bias = {b:.4f}")
 
     return model, history
 
@@ -143,7 +166,7 @@ def train_irm(
     mlp_hidden: int = 256, mlp_layers: int = 1,
     mlp_dropout: float = 0.1, mlp_bn: bool = False
 ):
-    history = {'step': [], 'loss': [], 'train_acc': [], 'val_acc': [], 'test_acc': []}
+    history = {'step': [], 'loss': [], 'train_acc': [], 'val_acc': [], 'test_acc': [], 'w_z': [], 'w_y': []}
 
     torch.manual_seed(seed)
     device = torch.device(resolve_device(device))
@@ -178,7 +201,7 @@ def train_irm(
 
     E = len(envs)
     penalty_start_step = 1500   # step à partir duquel la pénalité est activée
-    warmup_steps = 5000         # durée du warmup après ce step
+    warmup_steps = 6000         # durée du warmup après ce step
 
     for t in range(steps):
         phi.train()
@@ -212,6 +235,16 @@ def train_irm(
 
         opt.zero_grad(); objective.backward(); opt.step()
 
+        # Learning rate scheduling
+        if t == 10000: #7500
+            for pg in opt.param_groups: pg['lr'] = 1e-3
+        elif t == 20000: #15000
+            for pg in opt.param_groups: pg['lr'] = 5e-4
+        elif t == 30000: #22500
+            for pg in opt.param_groups: pg['lr'] = 1e-4
+        elif t == 40000: #30000
+            for pg in opt.param_groups: pg['lr'] = 5e-5
+
         if eval_every and ((t+1) % eval_every == 0) and (val_envs is not None) and (test_env is not None):
             train_acc = compute_accuracy(phi, envs)
             val_acc = compute_accuracy(phi, val_envs) if val_envs else 0.0
@@ -223,6 +256,19 @@ def train_irm(
             history['val_acc'].append(val_acc)
             history['test_acc'].append(test_acc)
 
+            if isinstance(phi, LogisticReg):
+                w = phi.linear.weight.detach().cpu().numpy()[0]
+                history['w_z'].append(float(w[0]))
+                history['w_y'].append(float(w[1]))
+            else:
+                history['w_z'].append(0.0)
+                history['w_y'].append(0.0)
+
             evaluate_and_log_step("IRM", t+1, phi, envs, val_envs, test_env, device=str(device), loss_val=float((emp_risk / E).item()))
+
+    if isinstance(phi, LogisticReg):
+        w = phi.linear.weight.detach().cpu().numpy()[0]
+        b = phi.linear.bias.detach().cpu().item()
+        print(f"[IRM] Final weights: w_z (causal) = {w[0]:.4f}, w_y (spurious) = {w[1]:.4f}, bias = {b:.4f}")
 
     return phi, history
