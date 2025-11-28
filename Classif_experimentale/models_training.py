@@ -15,7 +15,7 @@ def compute_accuracy(model: nn.Module, envs: List[Env]) -> float:
         return 0.0
     accuracies = []
     for env in envs:
-        acc = evaluate_binary(model, env, device="cpu") # evaluate_binary expects env, not X, y
+        acc = evaluate_binary(model, env, device="cpu")
         accuracies.append(acc)
     return np.mean(accuracies)
 
@@ -69,7 +69,8 @@ def train_erm(
     eval_every: int = 0, val_envs: Optional[List[Env]] = None,
     test_env: Optional[Env] = None,
     model_kind: str = "mlp",
-    mlp_hidden: int = 256, mlp_layers: int = 1, mlp_dropout: float = 0.1, mlp_bn: bool = False
+    mlp_hidden: int = 256, mlp_layers: int = 1, mlp_dropout: float = 0.1, mlp_bn: bool = False,
+    dataset_name: str = "synthetic_semi_anti_causal"
 ):
     history = {'step': [], 'loss': [], 'train_acc': [], 'val_acc': [], 'test_acc': [], 'w_z': [], 'w_y': []}
 
@@ -108,15 +109,35 @@ def train_erm(
         loss = bce(logits, yb)
         opt.zero_grad(); loss.backward(); opt.step()
 
-        # Learning rate scheduling
-        if t == 10000: #7500
-            for pg in opt.param_groups: pg['lr'] = 1e-3
-        elif t == 20000: #15000
-            for pg in opt.param_groups: pg['lr'] = 5e-4
-        elif t == 30000: #22500
-            for pg in opt.param_groups: pg['lr'] = 1e-4
-        elif t == 40000: #30000
-            for pg in opt.param_groups: pg['lr'] = 5e-5
+        # Learning rate scheduling (dataset-specific)
+        if dataset_name == "synthetic_confounding":
+            if t == 10000:
+                for pg in opt.param_groups: pg['lr'] = 1e-3
+            elif t == 20000:
+                for pg in opt.param_groups: pg['lr'] = 5e-4
+            elif t == 30000:
+                for pg in opt.param_groups: pg['lr'] = 1e-4
+            elif t == 40000:
+                for pg in opt.param_groups: pg['lr'] = 5e-5
+        elif dataset_name == "synthetic_semi_anti_causal":
+            if t == 5000:
+                for pg in opt.param_groups: pg['lr'] = 1e-3
+            elif t == 10000:
+                for pg in opt.param_groups: pg['lr'] = 5e-4
+            elif t == 15000:
+                for pg in opt.param_groups: pg['lr'] = 1e-4
+            elif t == 20000:
+                for pg in opt.param_groups: pg['lr'] = 5e-5
+        elif dataset_name == "synthetic_selection":
+            if t == 10000:
+                for pg in opt.param_groups: pg['lr'] = 1e-3
+            elif t == 20000:
+                for pg in opt.param_groups: pg['lr'] = 5e-4
+            elif t == 30000:
+                for pg in opt.param_groups: pg['lr'] = 1e-4
+            elif t == 40000:
+                for pg in opt.param_groups: pg['lr'] = 5e-5
+
 
         if eval_every and ((t+1) % eval_every == 0) and (val_envs is not None) and (test_env is not None):
             # Eval
@@ -132,18 +153,20 @@ def train_erm(
 
             if isinstance(model, LogisticReg):
                 w = model.linear.weight.detach().cpu().numpy()[0]
-                history['w_z'].append(float(w[0]))
-                history['w_y'].append(float(w[1]))
+                # Extract dimension info from first training env if available
+                dim_z = envs[0].meta.get('dim_z', 1) if hasattr(envs[0], 'meta') and envs[0].meta else 1
+                
+                # Split weights and compute norms
+                w_z_part = w[:dim_z]
+                w_y_part = w[dim_z:]
+                
+                history['w_z'].append(float(np.linalg.norm(w_z_part)))
+                history['w_y'].append(float(np.linalg.norm(w_y_part)))
             else:
                 history['w_z'].append(0.0)
                 history['w_y'].append(0.0)
 
             evaluate_and_log_step("ERM", t+1, model, envs, val_envs, test_env, device=str(device), loss_val=float(loss.item()))
-
-    if isinstance(model, LogisticReg):
-        w = model.linear.weight.detach().cpu().numpy()[0]
-        b = model.linear.bias.detach().cpu().item()
-        print(f"[ERM] Final weights: w_z (causal) = {w[0]:.4f}, w_y (spurious) = {w[1]:.4f}, bias = {b:.4f}")
 
     return model, history
 
@@ -164,7 +187,8 @@ def train_irm(
     test_env: Optional[Env] = None,
     model_kind: str = "mlp",
     mlp_hidden: int = 256, mlp_layers: int = 1,
-    mlp_dropout: float = 0.1, mlp_bn: bool = False
+    mlp_dropout: float = 0.1, mlp_bn: bool = False,
+    dataset_name: str = "synthetic_semi_anti_causal"
 ):
     history = {'step': [], 'loss': [], 'train_acc': [], 'val_acc': [], 'test_acc': [], 'w_z': [], 'w_y': []}
 
@@ -200,8 +224,12 @@ def train_irm(
             return next(iters[e_idx])
 
     E = len(envs)
-    penalty_start_step = 1500   # step à partir duquel la pénalité est activée
-    warmup_steps = 6000         # durée du warmup après ce step
+    if dataset_name == "synthetic_semi_anti_causal":
+        penalty_start_step = 1000
+        warmup_steps = 4000
+    else:
+        penalty_start_step = 1500
+        warmup_steps = 6000
 
     for t in range(steps):
         phi.train()
@@ -235,15 +263,35 @@ def train_irm(
 
         opt.zero_grad(); objective.backward(); opt.step()
 
-        # Learning rate scheduling
-        if t == 10000: #7500
-            for pg in opt.param_groups: pg['lr'] = 1e-3
-        elif t == 20000: #15000
-            for pg in opt.param_groups: pg['lr'] = 5e-4
-        elif t == 30000: #22500
-            for pg in opt.param_groups: pg['lr'] = 1e-4
-        elif t == 40000: #30000
-            for pg in opt.param_groups: pg['lr'] = 5e-5
+        # Learning rate scheduling (dataset-specific)
+        if dataset_name == "synthetic_confounding":
+            if t == 10000:
+                for pg in opt.param_groups: pg['lr'] = 1e-3
+            elif t == 20000:
+                for pg in opt.param_groups: pg['lr'] = 5e-4
+            elif t == 30000:
+                for pg in opt.param_groups: pg['lr'] = 1e-4
+            elif t == 40000:
+                for pg in opt.param_groups: pg['lr'] = 5e-5
+        elif dataset_name == "synthetic_semi_anti_causal":
+            if t == 15000:
+                for pg in opt.param_groups: pg['lr'] = 1e-3
+            elif t == 22500:
+                for pg in opt.param_groups: pg['lr'] = 5e-4
+            elif t == 30000:
+                for pg in opt.param_groups: pg['lr'] = 1e-4
+            elif t == 37500:
+                for pg in opt.param_groups: pg['lr'] = 5e-5
+        elif dataset_name == "synthetic_selection":
+            if t == 10000:
+                for pg in opt.param_groups: pg['lr'] = 1e-3
+            elif t == 20000:
+                for pg in opt.param_groups: pg['lr'] = 5e-4
+            elif t == 30000:
+                for pg in opt.param_groups: pg['lr'] = 1e-4
+            elif t == 40000:
+                for pg in opt.param_groups: pg['lr'] = 5e-5
+
 
         if eval_every and ((t+1) % eval_every == 0) and (val_envs is not None) and (test_env is not None):
             train_acc = compute_accuracy(phi, envs)
@@ -258,17 +306,19 @@ def train_irm(
 
             if isinstance(phi, LogisticReg):
                 w = phi.linear.weight.detach().cpu().numpy()[0]
-                history['w_z'].append(float(w[0]))
-                history['w_y'].append(float(w[1]))
+                # Extract dimension info from first training env if available
+                dim_z = envs[0].meta.get('dim_z', 1) if hasattr(envs[0], 'meta') and envs[0].meta else 1
+                
+                # Split weights and compute norms
+                w_z_part = w[:dim_z]
+                w_y_part = w[dim_z:]
+                
+                history['w_z'].append(float(np.linalg.norm(w_z_part)))
+                history['w_y'].append(float(np.linalg.norm(w_y_part)))
             else:
                 history['w_z'].append(0.0)
                 history['w_y'].append(0.0)
 
             evaluate_and_log_step("IRM", t+1, phi, envs, val_envs, test_env, device=str(device), loss_val=float((emp_risk / E).item()))
-
-    if isinstance(phi, LogisticReg):
-        w = phi.linear.weight.detach().cpu().numpy()[0]
-        b = phi.linear.bias.detach().cpu().item()
-        print(f"[IRM] Final weights: w_z (causal) = {w[0]:.4f}, w_y (spurious) = {w[1]:.4f}, bias = {b:.4f}")
 
     return phi, history

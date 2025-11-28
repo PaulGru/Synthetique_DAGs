@@ -87,6 +87,8 @@ def make_env_semi_anti_causal(
     p_spur: float,
     seed: int,
     label_flip: float = 0.25,
+    dim_z: int = 1,
+    dim_y: int = 1,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Jouet semi anti-causal : X_z -> Y -> Z -> X_y, avec Z binaire.
@@ -106,10 +108,14 @@ def make_env_semi_anti_causal(
         Proba de flip symétrique du label Y :
           - augmente → affaiblit le lien causal X_z -> Y.
           - typiquement 0.25 (comme dans Empirical or Invariant RM).
+    dim_z : int, optional
+        Dimension de la feature causale X_z (défaut: 1).
+    dim_y : int, optional
+        Dimension de la feature spurieuse X_y (défaut: 1).
 
     Renvoie
     -------
-    Xc : np.ndarray (n, 2)
+    Xc : np.ndarray (n, dim_z + dim_y)
         Features [X_z, X_y].
     Y  : np.ndarray (n, 1), float32 in {0,1}
         Labels (après flip).
@@ -118,27 +124,39 @@ def make_env_semi_anti_causal(
     """
     rng = _np_rng(seed)
 
-    # 1) Feature causale : X_z ~ N(0,1)
-    X_z = rng.normal(0.0, 1.0, size=(n, 1)).astype(np.float32)
+    # 1) Feature causale : X_z ~ N(0, I_dim_z)
+    X_z = rng.normal(0.0, 1.0, size=(n, dim_z)).astype(np.float32)
 
-    # 2) Label "propre" : Y* = 1{X_z > 0}
-    Y_star = (X_z > 0).astype(np.float32)
+    # 2) Vecteur de poids causaux "vrais" : w_true positifs
+    #    Pour garantir rétrocompatibilité: tous les poids sont positifs
+    #    Normalisé pour que la magnitude soit comparable quelle que soit dim_z
+    w_true = np.abs(rng.normal(0.0, 1.0, size=(dim_z,)))
+    w_true = w_true / np.linalg.norm(w_true) * np.sqrt(dim_z)
 
-    # 3) Flip symétrique des labels pour affaiblir le signal causal
+    # 3) Label "propre" : Y* = 1{w_true · X_z > 0}
+    Y_star = ((X_z @ w_true) > 0).astype(np.float32).reshape(-1, 1)
+
+    # 4) Flip symétrique des labels pour affaiblir le signal causal
     Y = Y_star.copy()
     if label_flip > 0.0:
         mask = rng.uniform(0.0, 1.0, size=(n, 1)) < label_flip
         Y[mask] = 1.0 - Y[mask]
 
-    # 4) Variable de style binaire Z = Y XOR Bernoulli(p_spur)
+    # 5) Variable de style binaire Z = Y XOR Bernoulli(p_spur)
     Z = Y.copy()
     flips_z = rng.uniform(0.0, 1.0, size=(n, 1)) < p_spur
     Z[flips_z] = 1.0 - Z[flips_z]
 
-    # 5) Feature spurieuse continue X_y = Z
-    X_y = Z
+    # 6) Feature spurieuse : X_y = u * Z + bruit, où u ~ N(0, 1)
+    #    u est un vecteur de "direction spurieuse"
+    #    Pour garantir rétrocompatibilité: tous les poids sont positifs (corrélation positive avec Z)
+    u = np.abs(rng.normal(0.0, 1.0, size=(dim_y,))).astype(np.float32)
+    u = u / np.linalg.norm(u) * np.sqrt(dim_y)
+    
+    # X_y = outer(Z, u) + noise
+    X_y = (Z @ u.reshape(1, -1)) + rng.normal(0.0, 0.1, size=(n, dim_y)).astype(np.float32)
 
-    # 6) Features finales : [X_z, X_y]
+    # 7) Features finales : [X_z, X_y]
     Xc = np.concatenate([X_z, X_y], axis=1).astype(np.float32)
 
     return Xc, Y.astype(np.float32), Z.astype(np.float32)
@@ -152,6 +170,8 @@ def build_envs_semi_anti_causal(
     val_frac: float = 0.2,
     label_flip: float = 0.25,
     n_test: Optional[int] = None,
+    dim_z: int = 1,
+    dim_y: int = 1,
 ) -> Tuple[List[Env], List[Env], Env]:
     """
     Construit des environnements semi anti-causaux.
@@ -174,6 +194,10 @@ def build_envs_semi_anti_causal(
         dans tous les envs).
     n_test : Optional[int], optional
         Nombre d'exemples en test (défaut: n).
+    dim_z : int, optional
+        Dimension de la feature causale X_z (défaut: 1).
+    dim_y : int, optional
+        Dimension de la feature spurieuse X_y (défaut: 1).
 
     Renvoie
     -------
@@ -194,6 +218,8 @@ def build_envs_semi_anti_causal(
             p_spur=p_spur,
             seed=seed + i,
             label_flip=label_flip,
+            dim_z=dim_z,
+            dim_y=dim_y,
         )
 
         (X_tr, y_tr), (X_val, y_val) = _split_numpy(Xc, Y, val_frac, seed + 1000 + i)
@@ -206,7 +232,9 @@ def build_envs_semi_anti_causal(
             "label_flip": label_flip,
             "kind": "train",
             "env_id": i,
-            "Z": torch.from_numpy(Z_tr)
+            "Z": torch.from_numpy(Z_tr),
+            "dim_z": dim_z,
+            "dim_y": dim_y,
         }
         train_envs.append(Env(torch.from_numpy(X_tr), torch.from_numpy(y_tr), meta=meta_train))
 
@@ -216,9 +244,11 @@ def build_envs_semi_anti_causal(
             p_spur=p_spur,
             seed=seed + 5000 + i,
             label_flip=0.0,
+            dim_z=dim_z,
+            dim_y=dim_y,
         )
         val_envs.append(Env(torch.from_numpy(Xc_val), torch.from_numpy(Y_val_clean),
-                            meta={"p_spur": p_spur, "label_flip": 0.0, "kind": "val", "Z": torch.from_numpy(Z_val)}))
+                            meta={"p_spur": p_spur, "label_flip": 0.0, "kind": "val", "Z": torch.from_numpy(Z_val), "dim_z": dim_z, "dim_y": dim_y}))
 
     # Environnement de test OOD
     Xc_t, Y_t, Z_t = make_env_semi_anti_causal(
@@ -226,12 +256,16 @@ def build_envs_semi_anti_causal(
         p_spur=test_p_spur,
         seed=seed + 777,
         label_flip=0.0,
+        dim_z=dim_z,
+        dim_y=dim_y,
     )
     meta_test = {
         "p_spur": test_p_spur,
         "label_flip": 0.0,
         "kind": "test",
-        "Z": torch.from_numpy(Z_t)
+        "Z": torch.from_numpy(Z_t),
+        "dim_z": dim_z,
+        "dim_y": dim_y,
     }
     test_env = Env(torch.from_numpy(Xc_t), torch.from_numpy(Y_t), meta=meta_test)
 
@@ -249,19 +283,20 @@ def make_env_confounding(
     w: float,             # poids de X_z dans Y
     gamma: float = 2.0,   # poids du confondeur C dans Y
     *,
-    label_flip: float = 0.25,  # bruit de labels aléatoire
+    dim_z: int = 1,
+    dim_y: int = 1,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Génère un environnement confounded avec Z binaire :
 
       C   ~ Ber(0.25)                      (confondeur)
-      X_z ~ N(0, 1)                        (feature causale, ⟂ C)
+      X_z ~ N(0, I_dim_z)                  (feature causale, ⟂ C)
 
       Z = C \XOR N^e,   N^e ~ Ber(beta^e), beta^e dans {0.1, 0.2, 0.9}
 
-      X_y = 2 * Z + eps,  eps ~ N(0, sigma_y^2)   (feature spurieuse continue)
+      X_y = u_y * Z + eps,  eps ~ N(0, sigma_y^2)   (feature spurieuse continue)
 
-      Y   = sign( w * X_z + gamma * (2C - 1) )
+      Y   = sign( w_true * X_z + gamma * (2C - 1) )
       
       Puis flip aléatoire avec proba label_flip.
 
@@ -273,25 +308,25 @@ def make_env_confounding(
     C = rng.binomial(1, 0.25, size=(n, 1)).astype(np.float32)
 
     # 2) Feature causale X_Z^{⊥}, indépendante de C
-    X_z = rng.normal(0.0, 1.0, size=(n, 1)).astype(np.float32)
+    X_z = rng.normal(0.0, 1.0, size=(n, dim_z)).astype(np.float32)
 
     # 3) Bruit d'environnement N^e ~ Ber(a) et variable intermédiaire Z = C XOR N^e
     N_e = rng.binomial(1, a, size=(n, 1))  # {0,1}
     Z = np.logical_xor(C.astype(bool), N_e.astype(bool)).astype(np.float32)
 
     # 4) Feature spurieuse X_Y^{⊥} = 2 * Z + eps, eps ~ N(0, sigma_y^2)
-    eps_y = rng.normal(0.0, 0.3, size=(n, 1)).astype(np.float32)
-    X_y = (2 * Z + eps_y).astype(np.float32)
+    u_y = np.abs(rng.normal(0.0, 1.0, size=(dim_y,)))
+    u_y = u_y / np.linalg.norm(u_y) * np.sqrt(dim_y)
 
-    # 5) Label Y = sign( w * X_z + gamma * (2C - 1) )
-    #    C est 0/1 -> 2C-1 est -1/+1
-    logit = w * X_z + gamma * (2 * C - 1.0)
+    eps_y = rng.normal(0.0, 0.3, size=(n, dim_y)).astype(np.float32)
+    X_y = (Z @ u_y.reshape(1, -1) + eps_y).astype(np.float32)
+
+    # 5) Label Y = sign( w_true * X_z + gamma * (2C - 1) )
+    w_true = np.abs(rng.normal(0.0, 1.0, size=(dim_z,)))
+    w_true = w_true / np.linalg.norm(w_true) * w  # Échelle selon le paramètre w
+    
+    logit = (X_z @ w_true).reshape(-1, 1) + gamma * (2.0 * C - 1.0)
     Y = (logit > 0.0).astype(np.float32)
-
-    # 6) Flip aléatoire des labels (bruit standard)
-    # if label_flip and label_flip > 0.0:
-    #     flips = rng.uniform(0.0, 1.0, size=Y.shape) < label_flip
-    #     Y[flips] = 1.0 - Y[flips]
 
     # 7) Entrée modèle : X = [X_Z^{⊥}, X_Y^{⊥}]
     Xc = np.concatenate([X_z, X_y], axis=1).astype(np.float32)
@@ -311,7 +346,8 @@ def build_envs_confounding(
     val_frac: float = 0.2,
     n_test: Optional[int] = None,
     *,
-    label_flip: float = 0.25,    # > 0 pour le TRAIN ; en VAL/TEST on mettra 0.0
+    dim_z: int = 1,
+    dim_y: int = 1,
 ) -> Tuple[List[Env], List[Env], Env]:
     """
     Construit un jeu multi-environnements avec confounder de type CF-CMNIST :
@@ -350,7 +386,8 @@ def build_envs_confounding(
             a=a_e,
             w=w,
             gamma=gamma,
-            label_flip=label_flip,
+            dim_z=dim_z,
+            dim_y=dim_y,
         )
 
         # On découpe ce jeu en train / val (val sera régénéré sans flip)
@@ -372,7 +409,6 @@ def build_envs_confounding(
             "a": float(a_e),
             "w": float(w),
             "gamma": float(gamma),
-            "label_flip": float(label_flip),
             "split": "train",
             "env_id": i,
             "Z": torch.from_numpy(Z_tr) # Stockage de Z pour analyse
@@ -388,11 +424,11 @@ def build_envs_confounding(
             a=a_e,
             w=w,
             gamma=gamma,
-            label_flip=0.0,          # VAL : pas de bruit
+            dim_z=dim_z,
+            dim_y=dim_y,
         )
         meta_val = {
             **meta_train,
-            "label_flip": label_flip,
             "split": "val",
             "Z": torch.from_numpy(Z_val)
         }
@@ -407,14 +443,14 @@ def build_envs_confounding(
         a=a_test,
         w=w,
         gamma=gamma,
-        label_flip=0.0,              # TEST : pas de bruit
+        dim_z=dim_z,
+        dim_y=dim_y,
     )
     meta_t = {
         "kind": "confounding",
         "a": float(a_test),
         "w": float(w),
         "gamma": float(gamma),
-        "label_flip": label_flip,
         "split": "test_ood",
         "env_id": "test",
         "Z": torch.from_numpy(Z_t)
@@ -428,19 +464,15 @@ def build_envs_confounding(
 # =============================================================================
 # 3) Selection bias — Causalité brisée par processus de sélection
 # =============================================================================
-def _sigmoid(x: np.ndarray) -> np.ndarray:
-    return 1.0 / (1.0 + np.exp(-x))
-
-
 def make_env_selection(
     n: int,
-    w: float,
-    alpha: float,      # joue maintenant le rôle de ψ^e
+    alpha: float,      # Probabilité de garder un exemple où Z==Y (créer corrélation spurieuse)
     seed: int,
     *,
-    gamma: float = 1.0,
-    label_flip: float = 0.0,
+    label_flip: float = 0.25,
     keep_if_one: bool = True,
+    dim_z: int = 1,
+    dim_y: int = 1,
 ) -> Tuple[np.ndarray, np.ndarray, float]:
     """
     Biais de sélection à la CS-CMNIST.
@@ -448,32 +480,34 @@ def make_env_selection(
     Population de base (commune à tous les envs)
     -------------------------------------------
       Z              ~ Bernoulli(1/2)                 (variable de contexte)
-      X_Z^{⊥}        ~ N(0, 1)
-      ε_Y            ~ N(0, sigma_y^2)
-      Y*             = sign( w * X_Z^{⊥} + ε_Y )      (latent ∈ {-1,+1})
+      X_Z^{⊥}        ~ N(0, I_dim_z)
+      Y*             = sign( w_true * X_Z^{⊥} )      (latent ∈ {-1,+1})
       Y              = 1{ Y* > 0 } ∈ {0,1}
       (optionnel)    flip(Y) avec prob label_flip
-      ε_X            ~ N(0, sigma_x^2)
-      X_Y^{⊥}        = γ * Z + ε_X
+      X_Y^{⊥}        = u * Z
 
     Biais de sélection (spécifique à l'env e)
     ----------------------------------------
       On garde un point avec probabilité :
-         - 1 - ψ^e   si Z == Y
-         - ψ^e       sinon
-      où ψ^e = alpha (dans le code).
+         - alpha        si Z == Y (créer corrélation spurieuse)
+         - 1 - alpha    si Z ≠ Y
+      
+      Exemple:
+         - alpha = 0.9 → garde 90% des Z==Y, 10% des Z≠Y → forte corrélation
+         - alpha = 0.5 → garde 50% partout → pas de biais
+         - alpha = 0.1 → garde 10% des Z==Y, 90% des Z≠Y → corrélation inversée (OOD)
 
-      On garde les points sélectionnés (S = 1 si keep_if_one=True, sinon S=0).
+      On garde les points sélectionnés (S = 1 si keep_if_one=True).
 
     Renvoie
     -------
-    Xc : ndarray (n, 2)  avec colonnes [X_Z^{⊥}, X_Y^{⊥}]
+    Xc : ndarray (n, dim_z + dim_y)
     Y  : ndarray (n, 1)  labels {0,1}
-    sel_rate : proportion approx. retenue (S=1/0) avant tronquage à n
+    sel_rate : proportion retenue avant tronquage à n
     """
     rng = _np_rng(seed)
 
-    kept_Xz, kept_Xy, kept_Y = [], [], []
+    kept_Xz, kept_Xy, kept_Y, kept_Z = [], [], [], []
     kept, total = 0, 0
 
     while kept < n:
@@ -482,41 +516,57 @@ def make_env_selection(
         # --- Population de base ---
         Z = rng.binomial(1, 0.5, size=(B, 1)).astype(np.float32)  # contexte binaire
 
-        Xz = rng.normal(0, 1.0, size=(B, 1)).astype(np.float32)  # X_Z^{⊥}
+        Xz = rng.normal(0, 1.0, size=(B, dim_z)).astype(np.float32)  # X_Z^{⊥}
 
-        Y = (w * Xz > 0.0).astype(np.float32)                                # ∈ {0,1}
+        w_true = np.abs(rng.normal(0.0, 1.0, size=(dim_z,)))
+        w_true = w_true / np.linalg.norm(w_true) * np.sqrt(dim_z)
+        Y = ((Xz @ w_true).reshape(-1, 1) > 0.0).astype(np.float32)                                # ∈ {0,1}
 
         # Flip symétrique des labels (si demandé)
         if label_flip and label_flip > 0.0:
             flips = rng.uniform(size=Y.shape) < label_flip
             Y[flips] = 1.0 - Y[flips]
 
-        eps_X = rng.normal(0.0, 0.3, size=(B, 1)).astype(np.float32)
-        Xy = (gamma * Z + eps_X).astype(np.float32)  # X_Y^{⊥}
+        u = np.abs(rng.normal(0.0, 1.0, size=(dim_y,)))
+        u = u / np.linalg.norm(u) * np.sqrt(dim_y)
 
-        # --- Sélection à la CS-CMNIST ---
+        # eps_X = rng.normal(0.0, 0.3, size=(B, dim_y)).astype(np.float32)
+        Xy = Z @ u.reshape(1, -1) # + eps_X
+
+        # --- Sélection basée sur Z==Y ---
         # "same" <=> Z == Y
         same = (Z == Y).astype(np.float32)
-        # proba de sélection : 1-ψ si même, ψ sinon
-        psi = float(alpha)
-        S_p = np.where(same == 1.0, 1.0 - psi, psi)
-        S = rng.uniform(size=(B, 1)) < S_p
+        
+        # alpha = probabilité de garder si Z==Y
+        # 1-alpha = probabilité de garder si Z≠Y
+        prob_keep_if_same = float(alpha)
+        prob_keep_if_diff = 1.0 - prob_keep_if_same
+        
+        S_p = np.where(same == 1.0, prob_keep_if_same, prob_keep_if_diff)
+        
+        S_samples = (rng.uniform(size=S_p.shape) < S_p).astype(np.float32)
 
-        mask = (S[:, 0] == (1 if keep_if_one else 0))
+        mask = (S_samples == (1.0 if keep_if_one else 0.0)).flatten()
 
         kept_Xz.append(Xz[mask])
         kept_Xy.append(Xy[mask])
         kept_Y.append(Y[mask])
+        kept_Z.append(Z[mask])  # Garder Z aussi
 
-        kept += int(mask.sum())
+        kept += mask.sum()
         total += B
 
     Xz_k = np.concatenate(kept_Xz, axis=0)[:n]
     Xy_k = np.concatenate(kept_Xy, axis=0)[:n]
     Y_k  = np.concatenate(kept_Y,  axis=0)[:n]
+    Z_k  = np.concatenate(kept_Z,  axis=0)[:n]
 
     Xc = np.concatenate([Xz_k, Xy_k], axis=1).astype(np.float32)
-    sel_rate = float(kept) / float(total)
+    sel_rate = kept / total if total > 0 else 0.0
+    
+    # Vérification de la proportion finale Z==Y
+    same_final = (Z_k == Y_k).astype(np.float32).mean()
+    print(f"[Selection α={alpha:.2f}] Proportion finale Z==Y: {same_final:.2%} (attendu: {alpha:.2%})")
 
     return Xc, Y_k.astype(np.float32), sel_rate
 
@@ -525,12 +575,12 @@ def build_envs_selection(
     n: int,
     train_alphas: List[float],   # liste des ψ^e pour les envs de train
     test_alpha: float,           # ψ^e pour le test OOD
-    w: float = 1.0,
-    gamma: float = 1.0,
     seed: int = 1,
     val_frac: float = 0.2,
     n_test: Optional[int] = None,
     label_flip: float = 0.25,
+    dim_z: int = 1,
+    dim_y: int = 1,
 ) -> Tuple[List[Env], List[Env], Env]:
 
     if n_test is None:
@@ -542,19 +592,17 @@ def build_envs_selection(
         # ===== TRAIN : flip de label autorisé =====
         Xc, Y, rate = make_env_selection(
             n=n,
-            w=w,
             alpha=psi,
             seed=seed + i,
-            gamma=gamma,
             label_flip=label_flip,
+            dim_z=dim_z,
+            dim_y=dim_y,
         )
         (X_tr, y_tr), (X_val, y_val) = _split_numpy(Xc, Y, val_frac, seed + 1000 + i)
 
         meta = {
             "kind": "selection",
             "psi": float(psi),
-            "w": float(w),
-            "gamma": float(gamma),
             "label_flip": float(label_flip),
             "sel_rate": rate,
             "split": "train",
@@ -564,17 +612,15 @@ def build_envs_selection(
         # ===== VAL : pas de flip de label =====
         Xc_val, Y_val, rate_val = make_env_selection(
             n=n,
-            w=w,
             alpha=psi,
             seed=seed + 5000 + i,
-            gamma=gamma,
             label_flip=0.0,
+            dim_z=dim_z,
+            dim_y=dim_y,
         )
         meta_val = {
             "kind": "selection",
             "psi": float(psi),
-            "w": float(w),
-            "gamma": float(gamma),
             "label_flip": 0.0,
             "sel_rate": rate_val,
             "split": "val",
@@ -584,17 +630,15 @@ def build_envs_selection(
     # ===== TEST : pas de flip de label =====
     Xc_t, Y_t, rate_t = make_env_selection(
         n=n_test,
-        w=w,
-        gamma=gamma,
         alpha=test_alpha,
         seed=seed + 777,
         label_flip=0.0,
+        dim_z=dim_z,
+        dim_y=dim_y,
     )
     meta_t = {
         "kind": "selection",
         "psi": float(test_alpha),
-        "w": float(w),
-        "gamma": float(gamma),
         "label_flip": 0.0,
         "sel_rate": rate_t,
         "split": "test_ood",

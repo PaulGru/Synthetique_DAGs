@@ -76,6 +76,8 @@ if __name__ == "__main__":
     p.add_argument('--n_test', type=int, default=10000, help='taille test pour toy (défaut = n)')
     p.add_argument('--label_flip', type=float, default=0.25, help='bruit de label global pour toy')
     p.add_argument('--val_frac', type=float, default=0.05, help='fraction validation pour toy')
+    p.add_argument('--dim_z', type=int, default=1, help='dimension de la feature causale X_z')
+    p.add_argument('--dim_y', type=int, default=1, help='dimension de la feature spurieuse X_y')
 
     # ---- Hyperparams semi anti-causal ----
     p.add_argument('--ps_train', type=float, nargs='+', default=[0.2, 0.1])
@@ -92,11 +94,9 @@ if __name__ == "__main__":
                 help="Flip de labels (uniquement en train) pour affaiblir le signal causal.")
 
     # ---- Hyperparams Selection bias (collider) ----
-    p.add_argument('--sel_alpha_train', type=float, nargs='+', default=[ 2.0, -2.0 ],
-        help="alphas de sélection pour les environnements d'entraînement (ex: 2.0 -2.0)")
-    p.add_argument('--sel_alpha_test', type=float, default=-2.5, help='alpha test OOD')
-    p.add_argument('--sel_w', type=float, default=1.0,
-        help="poids du signal X dans Y : Y = 1{ w*X > 0 } (pas d'epsilon)")
+    p.add_argument('--sel_alpha_train', type=float, nargs='+', default=[0.9, 0.8],
+        help="probabilités de garder si Z==Y pour les envs d'entraînement (ex: 0.9 0.8)")
+    p.add_argument('--sel_alpha_test', type=float, default=0.1, help='alpha test OOD (ex: 0.1 pour inverser)')
     p.add_argument('--sel_label_flip', type=float, default=0.25,
         help="taux de flips symétriques sur Y (identique dans tous les envs). Remplace sigma_eps.")
 
@@ -136,6 +136,8 @@ if __name__ == "__main__":
             val_frac=float(args.val_frac),
             label_flip=float(args.label_flip),
             n_test=args.n_test,
+            dim_z=args.dim_z,
+            dim_y=args.dim_y,
         )
 
         # ===== ERM =====
@@ -144,7 +146,8 @@ if __name__ == "__main__":
             steps=args.erm_steps, lr=args.erm_lr, batch=args.erm_batch,
             seed=args.seed, device=device, eval_every=args.eval_every,  
             model_kind=args.model_kind, mlp_hidden=256,
-            mlp_layers=1, mlp_dropout=0.1, mlp_bn=False
+            mlp_layers=1, mlp_dropout=0.1, mlp_bn=False,
+            dataset_name=args.dataset
         )
         plot_history(erm_hist, f"ERM - {args.dataset}", os.path.join(plot_dir, "plot_erm.png"))
         plot_weights(erm_hist, f"ERM - {args.dataset}", os.path.join(plot_dir, "weights_erm.png"))
@@ -154,7 +157,8 @@ if __name__ == "__main__":
             steps=args.irm_steps, lr=args.irm_lr, batch=args.irm_batch,
             seed=args.seed, device=device, eval_every=args.eval_every,
             irm_lambda=args.irm_lambda, model_kind=args.model_kind, mlp_hidden=256,
-            mlp_layers=1, mlp_dropout=0.1, mlp_bn=False
+            mlp_layers=1, mlp_dropout=0.1, mlp_bn=False,
+            dataset_name=args.dataset
         )
         plot_history(irm_hist, f"IRM - {args.dataset}", os.path.join(plot_dir, "plot_irm.png"))
         plot_weights(irm_hist, f"IRM - {args.dataset}", os.path.join(plot_dir, "weights_irm.png"))
@@ -168,13 +172,15 @@ if __name__ == "__main__":
             seed=args.seed,
             val_frac=args.val_frac,
             n_test=args.n_test,
-            label_flip=args.conf_label_flip,
+            dim_z=args.dim_z,
+            dim_y=args.dim_y,
         )
         erm, erm_hist = train_erm(
             envs=train_envs, val_envs=val_envs, test_env=test_env,
             steps=args.erm_steps, lr=args.erm_lr, batch=args.erm_batch,
             seed=args.seed, device=device, eval_every=args.eval_every,
-            model_kind=args.model_kind, mlp_hidden=256, mlp_dropout=0.1, mlp_bn=False
+            model_kind=args.model_kind, mlp_hidden=256, mlp_dropout=0.1, mlp_bn=False,
+            dataset_name=args.dataset
         )
         plot_history(erm_hist, f"ERM - {args.dataset}", os.path.join(plot_dir, "plot_erm.png"))
         plot_weights(erm_hist, f"ERM - {args.dataset}", os.path.join(plot_dir, "weights_erm.png"))
@@ -185,7 +191,9 @@ if __name__ == "__main__":
             irm_lambda=args.irm_lambda,
             seed=args.seed, device=device,
             eval_every=args.eval_every,
-            model_kind=args.model_kind, mlp_hidden=256
+            model_kind=args.model_kind, mlp_hidden=256,
+            mlp_layers=1, mlp_dropout=0.1, mlp_bn=False,
+            dataset_name=args.dataset
         )
         plot_history(irm_hist, f"IRM - {args.dataset}", os.path.join(plot_dir, "plot_irm.png"))
         plot_weights(irm_hist, f"IRM - {args.dataset}", os.path.join(plot_dir, "weights_irm.png"))
@@ -199,11 +207,12 @@ if __name__ == "__main__":
             n=args.n,
             train_alphas=train_alphas,
             test_alpha=test_alpha,
-            w=args.sel_w,
             seed=args.seed,
             val_frac=args.val_frac,
             n_test=args.n_test,
             label_flip=args.sel_label_flip,
+            dim_z=args.dim_z,
+            dim_y=args.dim_y,
         )
 
         erm, erm_hist = train_erm(
@@ -212,7 +221,8 @@ if __name__ == "__main__":
             seed=args.seed, device=device,
             eval_every=args.eval_every, val_envs=val_envs, test_env=test_env,
             model_kind=args.model_kind, mlp_hidden=256,
-            mlp_layers=1, mlp_dropout=0.1, mlp_bn=False
+            mlp_layers=1, mlp_dropout=0.1, mlp_bn=False,
+            dataset_name=args.dataset
         )
         plot_history(erm_hist, f"ERM - {args.dataset}", os.path.join(plot_dir, "plot_erm.png"))
         plot_weights(erm_hist, f"ERM - {args.dataset}", os.path.join(plot_dir, "weights_erm.png"))
@@ -223,7 +233,9 @@ if __name__ == "__main__":
             irm_lambda=args.irm_lambda,
             seed=args.seed, device=device,
             eval_every=args.eval_every, val_envs=val_envs, test_env=test_env,
-            model_kind=args.model_kind, mlp_hidden=256
+            model_kind=args.model_kind, mlp_hidden=256,
+            mlp_layers=1, mlp_dropout=0.1, mlp_bn=False,
+            dataset_name=args.dataset
         )
         plot_history(irm_hist, f"IRM - {args.dataset}", os.path.join(plot_dir, "plot_irm.png"))
         plot_weights(irm_hist, f"IRM - {args.dataset}", os.path.join(plot_dir, "weights_irm.png"))
