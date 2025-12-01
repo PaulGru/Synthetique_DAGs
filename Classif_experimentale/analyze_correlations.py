@@ -77,8 +77,7 @@ def analyze_correlations():
         n_test = 10000
         val_frac = 0.1
         train_alphas = [0.1, 0.2]  # 90% et 80% de garder si Z==Y (forte corrélation)
-        test_alpha = 0.9            # 10% de garder si Z==Y (corrélation inversée OOD)
-        sel_w = 1.0
+        test_alpha = 0.9
         sel_label_flip = 0.25
         seed = 1
 
@@ -86,7 +85,6 @@ def analyze_correlations():
         print(f"  n: {n}")
         print(f"  train_alphas: {train_alphas}")
         print(f"  test_alpha: {test_alpha}")
-        print(f"  sel_w: {sel_w}")
         print(f"  sel_label_flip: {sel_label_flip}")
         print("-" * 30)
 
@@ -94,7 +92,6 @@ def analyze_correlations():
             n=n,
             train_alphas=train_alphas,
             test_alpha=test_alpha,
-            w=sel_w,
             seed=seed,
             val_frac=val_frac,
             n_test=n_test,
