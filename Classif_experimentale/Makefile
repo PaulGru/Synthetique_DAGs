@@ -1,0 +1,67 @@
+.PHONY: analyze train help
+
+# Analyze correlations across all three datasets
+analyze:
+	python analyze_correlations.py
+
+# Train models (you can customize this with your preferred arguments)
+train_confounding:
+	python main.py
+	--dataset synthetic_confounding
+	--n 200000
+	--n_test 10000
+	--val_frac 0.1
+	--conf_a_train 0.1 0.2
+	--conf_a_test 0.9
+	--conf_w 1.5
+	--erm_steps 45000
+	--erm_lr 5e-3
+	--irm_steps 45000
+	--irm_lr 5e-3
+	--irm_lambda 50.0
+	--model_kind logreg
+	--eval_every 10
+	--device auto
+
+train_semi_anti_causal:
+	python main.py
+	--dataset synthetic_semi_anti_causal
+	--n 200000
+	--n_test 10000
+	--val_frac 0.1
+	--ps_train 0.1 0.2
+	--p_test_ood 0.9
+	--label_flip 0.25
+	--erm_steps 45000
+	--erm_lr 5e-3
+	--irm_steps 45000
+	--irm_lr 5e-3
+	--irm_lambda 50.0
+	--model_kind logreg
+	--eval_every 10
+	--device auto
+
+train_selection:
+	python main.py
+	--dataset synthetic_selection
+	--n 200000
+	--n_test 10000
+	--val_frac 0.1
+	--sel_alpha_train 0.9 0.8
+	--sel_alpha_test 0.1
+	--sel_label_flip 0.25
+	--erm_steps 45000
+	--erm_lr 5e-3
+	--irm_steps 45000
+	--irm_lr 5e-3
+	--irm_lambda 50.0
+	--model_kind logreg
+	--eval_every 10
+	--device auto
+
+# Show available commands
+help:
+	@echo "Available commands:"
+	@echo "  make analyze    - Run correlation analysis on all 3 datasets"
+	@echo "  make train      - Train models (customize as needed)"
+	@echo "  make help       - Show this help message"

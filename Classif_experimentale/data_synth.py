@@ -318,7 +318,7 @@ def make_env_confounding(
     u_y = np.abs(rng.normal(0.0, 1.0, size=(dim_y,)))
     u_y = u_y / np.linalg.norm(u_y) * np.sqrt(dim_y)
 
-    eps_y = rng.normal(0.0, 0.3, size=(n, dim_y)).astype(np.float32)
+    eps_y = rng.normal(0.0, 0.1, size=(n, dim_y)).astype(np.float32)
     X_y = (Z @ u_y.reshape(1, -1) + eps_y).astype(np.float32)
 
     # 5) Label Y = sign( w_true * X_z + gamma * (2C - 1) )
@@ -564,10 +564,6 @@ def make_env_selection(
     Xc = np.concatenate([Xz_k, Xy_k], axis=1).astype(np.float32)
     sel_rate = kept / total if total > 0 else 0.0
     
-    # Vérification de la proportion finale Z==Y
-    same_final = (Z_k == Y_k).astype(np.float32).mean()
-    print(f"[Selection α={alpha:.2f}] Proportion finale Z==Y: {same_final:.2%} (attendu: {alpha:.2%})")
-
     return Xc, Y_k.astype(np.float32), sel_rate
 
 

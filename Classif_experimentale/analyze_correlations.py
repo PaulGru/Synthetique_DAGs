@@ -4,13 +4,14 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score
 from data_synth import build_envs_confounding, build_envs_semi_anti_causal, build_envs_selection
 
-def analyze_correlations():
-    # Choose dataset to analyze
-    # dataset = 'synthetic_confounding'
-    # dataset = 'synthetic_semi_anti_causal'
-    dataset = 'synthetic_selection'
-
-    if dataset == 'synthetic_semi_anti_causal':
+def analyze_dataset(dataset_type):
+    """
+    Analyze correlations for a specific dataset type.
+    
+    Args:
+        dataset_type: 'synthetic_confounding', 'synthetic_semi_anti_causal', or 'synthetic_selection'
+    """
+    if dataset_type == 'synthetic_semi_anti_causal':
         # Parameters
         n = 200000
         n_test = 10000
@@ -38,15 +39,15 @@ def analyze_correlations():
         )
         env_names = [f"Train (p={p})" for p in ps_train] + [f"Test (p={p_test_ood})"]
 
-    elif dataset == 'synthetic_confounding':
+    elif dataset_type == 'synthetic_confounding':
         # Parameters from the user's note
         n = 200000
         n_test = 10000
         val_frac = 0.1
         conf_a_train = [0.1, 0.2]
         conf_a_test = 0.9
-        conf_w = 1.5
-        conf_gamma = 2.0
+        conf_w = 1.7  # Balanced to achieve causal correlation ~0.35-0.40
+        conf_gamma = 2.2  # Increased to strengthen spurious correlation ~0.65-0.70
         seed = 1
 
         print("Generating data (Confounding) with parameters:")
@@ -55,7 +56,6 @@ def analyze_correlations():
         print(f"  conf_a_test: {conf_a_test}")
         print(f"  conf_w: {conf_w}")
         print(f"  conf_gamma: {conf_gamma}")
-        print(f"  conf_label_flip: {conf_label_flip}")
         print("-" * 30)
 
         train_envs, val_envs, test_env = build_envs_confounding(
@@ -70,14 +70,13 @@ def analyze_correlations():
         )
         env_names = [f"Train (a={a})" for a in conf_a_train] + [f"Test (a={conf_a_test})"]
 
-
-    elif dataset == 'synthetic_selection':
+    elif dataset_type == 'synthetic_selection':
         # Parameters
         n = 200000
         n_test = 10000
         val_frac = 0.1
-        train_alphas = [0.1, 0.2]  # 90% et 80% de garder si Z==Y (forte corrélation)
-        test_alpha = 0.9
+        train_alphas = [0.9, 0.8]  # 90% et 80% de garder si Z==Y (forte corrélation)
+        test_alpha = 0.1
         sel_label_flip = 0.25
         seed = 1
 
@@ -133,6 +132,31 @@ def analyze_correlations():
             corr_xy_y = np.corrcoef(X_y_norm, Y)[0, 1]
 
         print(f"{name:<20} | {corr_xz_y:<12.4f} | {corr_xy_y:<12.4f}")
+    
+    print()  # Add a blank line after each table
+
+
+def analyze_correlations():
+    """
+    Analyze and display correlations for all three dataset types.
+    """
+    datasets = ['synthetic_confounding', 'synthetic_semi_anti_causal', 'synthetic_selection']
+    
+    print("=" * 80)
+    print("ANALYSE DE CORRÉLATIONS POUR LES 3 DATASETS")
+    print("=" * 80)
+    print()
+    
+    for i, dataset in enumerate(datasets, 1):
+        print(f"\n{'#' * 80}")
+        print(f"# DATASET {i}/3: {dataset.upper()}")
+        print(f"{'#' * 80}\n")
+        
+        analyze_dataset(dataset)
+    
+    print("=" * 80)
+    print("ANALYSE TERMINÉE")
+    print("=" * 80)
 
 if __name__ == "__main__":
     analyze_correlations()

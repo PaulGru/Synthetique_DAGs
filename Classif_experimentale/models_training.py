@@ -10,12 +10,12 @@ from data_synth import Env
 from utils_irm import (resolve_device, evaluate_binary, evaluate_group,
                        evaluate_and_log_step)
 
-def compute_accuracy(model: nn.Module, envs: List[Env]) -> float:
+def compute_accuracy(model: nn.Module, envs: List[Env], device: str = "cpu") -> float:
     if not envs:
         return 0.0
     accuracies = []
     for env in envs:
-        acc = evaluate_binary(model, env, device="cpu")
+        acc = evaluate_binary(model, env, device=device)
         accuracies.append(acc)
     return np.mean(accuracies)
 
@@ -141,9 +141,9 @@ def train_erm(
 
         if eval_every and ((t+1) % eval_every == 0) and (val_envs is not None) and (test_env is not None):
             # Eval
-            train_acc = compute_accuracy(model, envs)
-            val_acc = compute_accuracy(model, val_envs) if val_envs else 0.0
-            test_acc = compute_accuracy(model, [test_env]) if test_env else 0.0
+            train_acc = compute_accuracy(model, envs, device=str(device))
+            val_acc = compute_accuracy(model, val_envs, device=str(device)) if val_envs else 0.0
+            test_acc = compute_accuracy(model, [test_env], device=str(device)) if test_env else 0.0
     
             history['step'].append(t+1)
             history['loss'].append(loss.item())
@@ -294,9 +294,9 @@ def train_irm(
 
 
         if eval_every and ((t+1) % eval_every == 0) and (val_envs is not None) and (test_env is not None):
-            train_acc = compute_accuracy(phi, envs)
-            val_acc = compute_accuracy(phi, val_envs) if val_envs else 0.0
-            test_acc = compute_accuracy(phi, [test_env]) if test_env else 0.0
+            train_acc = compute_accuracy(phi, envs, device=str(device))
+            val_acc = compute_accuracy(phi, val_envs, device=str(device)) if val_envs else 0.0
+            test_acc = compute_accuracy(phi, [test_env], device=str(device)) if test_env else 0.0
             
             history['step'].append(t+1)
             history['loss'].append((emp_risk / E).item())
