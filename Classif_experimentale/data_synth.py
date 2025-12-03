@@ -155,6 +155,8 @@ def make_env_semi_anti_causal(
     
     # X_y = outer(Z, u) + noise
     X_y = (Z @ u.reshape(1, -1)) + rng.normal(0.0, 0.1, size=(n, dim_y)).astype(np.float32)
+    # Standardisation de X_y pour avoir une variance ~1 (comme X_z)
+    X_y = (X_y - X_y.mean(axis=0)) / (X_y.std(axis=0) + 1e-8)
 
     # 7) Features finales : [X_z, X_y]
     Xc = np.concatenate([X_z, X_y], axis=1).astype(np.float32)
@@ -280,8 +282,7 @@ def make_env_confounding(
     n: int,
     seed: int,
     a: float,             # intensité du lien C -> Z (varie avec l'env)
-    w: float,             # poids de X_z dans Y
-    gamma: float = 2.0,   # poids du confondeur C dans Y
+    gamma: float = 1.0,   # poids du confondeur C dans Y
     *,
     dim_z: int = 1,
     dim_y: int = 1,
@@ -305,7 +306,7 @@ def make_env_confounding(
     rng = _np_rng(seed)
 
     # 1) Confounder latent C
-    C = rng.binomial(1, 0.25, size=(n, 1)).astype(np.float32)
+    C = rng.binomial(1, 0.35, size=(n, 1)).astype(np.float32)
 
     # 2) Feature causale X_Z^{⊥}, indépendante de C
     X_z = rng.normal(0.0, 1.0, size=(n, dim_z)).astype(np.float32)
@@ -315,15 +316,17 @@ def make_env_confounding(
     Z = np.logical_xor(C.astype(bool), N_e.astype(bool)).astype(np.float32)
 
     # 4) Feature spurieuse X_Y^{⊥} = 2 * Z + eps, eps ~ N(0, sigma_y^2)
-    u_y = np.abs(rng.normal(0.0, 1.0, size=(dim_y,)))
-    u_y = u_y / np.linalg.norm(u_y) * np.sqrt(dim_y)
+    u = np.abs(rng.normal(0.0, 1.0, size=(dim_y,)))
+    u = u / np.linalg.norm(u) * np.sqrt(dim_y)
 
-    eps_y = rng.normal(0.0, 0.3, size=(n, dim_y)).astype(np.float32)
-    X_y = (Z @ u_y.reshape(1, -1) + eps_y).astype(np.float32)
+    X_y = (Z @ u.reshape(1, -1)).astype(np.float32)
+    # Standardisation de X_y pour avoir une variance ~1 (comme X_z)
+    # Cela rend les poids w_z et w_y comparables
+    X_y = (X_y - X_y.mean(axis=0)) / (X_y.std(axis=0) + 1e-8)
 
     # 5) Label Y = sign( w_true * X_z + gamma * (2C - 1) )
     w_true = np.abs(rng.normal(0.0, 1.0, size=(dim_z,)))
-    w_true = w_true / np.linalg.norm(w_true) * w  # Échelle selon le paramètre w
+    w_true = w_true / np.linalg.norm(w_true) * np.sqrt(dim_z)  # Échelle selon le paramètre w
     
     logit = (X_z @ w_true).reshape(-1, 1) + gamma * (2.0 * C - 1.0)
     Y = (logit > 0.0).astype(np.float32)
@@ -340,8 +343,7 @@ def build_envs_confounding(
     n: int,
     a_train: List[float],        # liste des a_e (beta^e) pour les environnements de TRAIN
     a_test: float,               # a_e (beta^e) pour l'environnement de TEST OOD
-    w: float = 1.0,
-    gamma: float = 2.0,
+    gamma: float = 1.0,
     seed: int = 1,
     val_frac: float = 0.2,
     n_test: Optional[int] = None,
@@ -384,7 +386,6 @@ def build_envs_confounding(
             n=n,
             seed=seed + i,
             a=a_e,
-            w=w,
             gamma=gamma,
             dim_z=dim_z,
             dim_y=dim_y,
@@ -407,7 +408,6 @@ def build_envs_confounding(
         meta_train = {
             "kind": "confounding",
             "a": float(a_e),
-            "w": float(w),
             "gamma": float(gamma),
             "split": "train",
             "env_id": i,
@@ -422,7 +422,6 @@ def build_envs_confounding(
             n=n_val,
             seed=seed + 5000 + i,
             a=a_e,
-            w=w,
             gamma=gamma,
             dim_z=dim_z,
             dim_y=dim_y,
@@ -441,7 +440,6 @@ def build_envs_confounding(
         n=n_test,
         seed=seed + 777,
         a=a_test,
-        w=w,
         gamma=gamma,
         dim_z=dim_z,
         dim_y=dim_y,
@@ -449,7 +447,6 @@ def build_envs_confounding(
     meta_t = {
         "kind": "confounding",
         "a": float(a_test),
-        "w": float(w),
         "gamma": float(gamma),
         "split": "test_ood",
         "env_id": "test",
@@ -558,6 +555,9 @@ def make_env_selection(
 
     Xz_k = np.concatenate(kept_Xz, axis=0)[:n]
     Xy_k = np.concatenate(kept_Xy, axis=0)[:n]
+    
+    # Standardisation de X_y pour avoir une variance ~1 (comme X_z)
+    Xy_k = (Xy_k - Xy_k.mean(axis=0)) / (Xy_k.std(axis=0) + 1e-8)
     Y_k  = np.concatenate(kept_Y,  axis=0)[:n]
     Z_k  = np.concatenate(kept_Z,  axis=0)[:n]
 
@@ -566,7 +566,7 @@ def make_env_selection(
     
     # Vérification de la proportion finale Z==Y
     same_final = (Z_k == Y_k).astype(np.float32).mean()
-    print(f"[Selection α={alpha:.2f}] Proportion finale Z==Y: {same_final:.2%} (attendu: {alpha:.2%})")
+    print(f"[Selection alpha={alpha:.2f}] Proportion finale Z==Y: {same_final:.2%} (attendu: {alpha:.2%})")
 
     return Xc, Y_k.astype(np.float32), sel_rate
 
@@ -635,7 +635,7 @@ def build_envs_selection(
         label_flip=0.0,
         dim_z=dim_z,
         dim_y=dim_y,
-    )
+        )
     meta_t = {
         "kind": "selection",
         "psi": float(test_alpha),

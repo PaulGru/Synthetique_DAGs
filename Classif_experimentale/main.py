@@ -76,8 +76,8 @@ if __name__ == "__main__":
     p.add_argument('--n_test', type=int, default=10000, help='taille test pour toy (défaut = n)')
     p.add_argument('--label_flip', type=float, default=0.25, help='bruit de label global pour toy')
     p.add_argument('--val_frac', type=float, default=0.05, help='fraction validation pour toy')
-    p.add_argument('--dim_z', type=int, default=1, help='dimension de la feature causale X_z')
-    p.add_argument('--dim_y', type=int, default=1, help='dimension de la feature spurieuse X_y')
+    p.add_argument('--dim_z', type=int, default=2, help='dimension de la feature causale X_z')
+    p.add_argument('--dim_y', type=int, default=2, help='dimension de la feature spurieuse X_y')
 
     # ---- Hyperparams semi anti-causal ----
     p.add_argument('--ps_train', type=float, nargs='+', default=[0.2, 0.1])
@@ -88,7 +88,7 @@ if __name__ == "__main__":
                 help="Liste des a_e pour les environnements de train.")
     p.add_argument('--conf_a_test', type=float, default=0.2,
                 help="Valeur de a_e pour l'environnement de test OOD.")
-    p.add_argument('--conf_w', type=float, default=1.0,
+    p.add_argument('--conf_gamma', type=float, default=1.2,
                 help="Poids de la feature causale X_z dans Y.")
     p.add_argument('--conf_label_flip', type=float, default=0.25,
                 help="Flip de labels (uniquement en train) pour affaiblir le signal causal.")
@@ -99,6 +99,8 @@ if __name__ == "__main__":
     p.add_argument('--sel_alpha_test', type=float, default=0.1, help='alpha test OOD (ex: 0.1 pour inverser)')
     p.add_argument('--sel_label_flip', type=float, default=0.25,
         help="taux de flips symétriques sur Y (identique dans tous les envs). Remplace sigma_eps.")
+    p.add_argument('--sel_sigma_y', type=float, default=0.3, 
+                   help='Noise std for X_y in selection bias')
 
     # Entraînement commun
     p.add_argument('--device', type=str, default='auto')
@@ -168,7 +170,7 @@ if __name__ == "__main__":
             n=args.n,
             a_train=args.conf_a_train,
             a_test=args.conf_a_test,
-            w=args.conf_w,
+            gamma=args.conf_gamma,
             seed=args.seed,
             val_frac=args.val_frac,
             n_test=args.n_test,

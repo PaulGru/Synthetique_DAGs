@@ -4,6 +4,7 @@ source .venv/bin/activate
 python main.py
   --dataset synthetic_semi_anti_causal
   --n 200000
+  --n_test 10000
   --val_frac 0.1
   --ps_train 0.1 0.2
   --p_test_ood 0.9
@@ -16,7 +17,6 @@ python main.py
   --model_kind logreg
   --eval_every 5
   --device auto
-  --seed 34
 
 
 python main.py
@@ -24,9 +24,8 @@ python main.py
   --n 200000
   --n_test 10000
   --val_frac 0.1
-  --conf_a_train 0.1 0.2
-  --conf_a_test 0.9
-  --conf_w 1.5
+  --conf_a_train 0.01 0.11
+  --conf_a_test 0.99
   --erm_steps 45000
   --erm_lr 5e-3
   --irm_steps 45000
