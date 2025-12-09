@@ -89,7 +89,7 @@ def train_erm(
         model = SmallMLP(d_in=d_in, hidden=mlp_hidden, n_layers=mlp_layers,
                         dropout=mlp_dropout, bn=mlp_bn, out_dim=1).to(device)
 
-    opt = torch.optim.Adam(model.parameters(), lr=lr)
+    opt = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
     bce = nn.BCEWithLogitsLoss()
 
     X_all = torch.cat([e.X for e in envs], dim=0)
@@ -109,7 +109,6 @@ def train_erm(
         loss = bce(logits, yb)
         opt.zero_grad(); loss.backward(); opt.step()
 
-        # Learning rate scheduling (dataset-specific)
         if dataset_name == "synthetic_confounding":
             if t == 10000:
                 for pg in opt.param_groups: pg['lr'] = 1e-3
@@ -117,17 +116,13 @@ def train_erm(
                 for pg in opt.param_groups: pg['lr'] = 5e-4
             elif t == 30000:
                 for pg in opt.param_groups: pg['lr'] = 1e-4
-            elif t == 40000:
-                for pg in opt.param_groups: pg['lr'] = 5e-5
         elif dataset_name == "synthetic_semi_anti_causal":
-            if t == 5000:
+            if t == 10000:
                 for pg in opt.param_groups: pg['lr'] = 1e-3
-            elif t == 10000:
-                for pg in opt.param_groups: pg['lr'] = 5e-4
-            elif t == 15000:
-                for pg in opt.param_groups: pg['lr'] = 1e-4
             elif t == 20000:
-                for pg in opt.param_groups: pg['lr'] = 5e-5
+                for pg in opt.param_groups: pg['lr'] = 5e-4
+            elif t == 30000:
+                for pg in opt.param_groups: pg['lr'] = 1e-4
         elif dataset_name == "synthetic_selection":
             if t == 10000:
                 for pg in opt.param_groups: pg['lr'] = 1e-3
@@ -135,8 +130,6 @@ def train_erm(
                 for pg in opt.param_groups: pg['lr'] = 5e-4
             elif t == 30000:
                 for pg in opt.param_groups: pg['lr'] = 1e-4
-            elif t == 40000:
-                for pg in opt.param_groups: pg['lr'] = 5e-5
 
 
         if eval_every and ((t+1) % eval_every == 0) and (val_envs is not None) and (test_env is not None):
@@ -174,9 +167,15 @@ def train_erm(
 # IRM (IRMv1)
 # =============================
 
-def _irm_penalty(loss_e_list: List[torch.Tensor], w_pen: torch.Tensor):
+def _irm_penalty(loss_e_list: List[torch.Tensor], w_pen: torch.Tensor, normalize_by_dim: int = 1):
+    """Calcule la pénalité IRM avec normalisation par dimension.
+    
+    ✅ FIX: Ajout du paramètre normalize_by_dim pour éviter l'explosion
+    de la pénalité en haute dimension (la norme au carré croît avec d).
+    """
     grads = [grad(le, w_pen, create_graph=True)[0] for le in loss_e_list]
-    return sum((g ** 2).sum() for g in grads)
+    penalty = sum((g ** 2).sum() for g in grads)
+    return penalty / normalize_by_dim  # Normalisation critique!
 
 
 def train_irm(
@@ -207,7 +206,8 @@ def train_irm(
         phi = SmallMLP(d_in=d_in, hidden=mlp_hidden, n_layers=mlp_layers,
                        dropout=mlp_dropout, bn=mlp_bn, out_dim=1).to(device)
 
-    opt = torch.optim.Adam(phi.parameters(), lr=lr)
+    # ✅ FIX: Ajout de weight decay pour régularisation L2
+    opt = torch.optim.Adam(phi.parameters(), lr=lr, weight_decay=1e-4)
     bce = nn.BCEWithLogitsLoss(reduction='mean')
 
     def make_loader(env):
@@ -224,46 +224,61 @@ def train_irm(
             return next(iters[e_idx])
 
     E = len(envs)
-    if dataset_name == "synthetic_semi_anti_causal":
-        penalty_start_step = 1000
-        warmup_steps = 4000
-    else:
-        penalty_start_step = 1500
-        warmup_steps = 6000
+    
+    warmup_steps = 2000
 
     for t in range(steps):
         phi.train()
-        w_pen = torch.tensor(1.0, device=device, requires_grad=True)
 
-        loss_e_list = []
+        # ✅ IMPLÉMENTATION OFFICIELLE IRM (Facebook Research)
+        # Source: https://github.com/facebookresearch/InvariantRiskMinimization
+        # 
+        # La clé: créer un scale SÉPARÉ pour chaque environnement,
+        # calculer sa pénalité indépendamment, puis moyenner.
+        
         emp_risk = 0.0
+        penalties = []
+        
         for e_idx in range(E):
             Xb, yb = next_batch(e_idx)
-            logits_emp = phi(Xb).squeeze()
-            loss_emp = bce(logits_emp, yb.squeeze(-1))
+            
+            # 1. Risque empirique
+            logits = phi(Xb).squeeze()
+            loss_emp = bce(logits, yb.squeeze(-1))
             emp_risk = emp_risk + loss_emp
+            
+            # 2. Pénalité IRM pour cet environnement
+            # Créer un scale unique pour mesurer le gradient
+            scale = torch.tensor(1.0, device=device, requires_grad=True)
+            loss_scaled = bce(logits * scale, yb.squeeze(-1))
+            grad_scale = grad(loss_scaled, [scale], create_graph=True)[0]
+            penalty_e = grad_scale ** 2
+            penalties.append(penalty_e)
+        
+        # Moyennes
+        emp_risk = emp_risk / E
+        penalty = torch.stack(penalties).mean()
 
-            logits_pen = logits_emp * w_pen
-            loss_pen = bce(logits_pen, yb)
-            loss_e_list.append(loss_pen)
-
-        penalty = _irm_penalty(loss_e_list, w_pen)
-
-        # scheduling de lambda_t
-        if t < penalty_start_step:
-            # avant penalty_start_step : aucune pénalité
-            lambda_t = 0.0
-        elif penalty_start_step + warmup_steps:
-            alpha = (t - penalty_start_step) / float(warmup_steps)
+        
+        if t < warmup_steps:
+            # warmup linéaire de 0 à irm_lambda
+            alpha = t / float(warmup_steps)
             lambda_t = alpha * irm_lambda
         else:
+            # après warmup : lambda constant
             lambda_t = irm_lambda
 
-        objective = (emp_risk / E) + lambda_t * penalty
+        objective = emp_risk + lambda_t * penalty
+        
+        # ✅ FIX: Rescaling comme dans l'implémentation officielle Facebook Research
+        # Source: https://github.com/facebookresearch/InvariantRiskMinimization
+        # Quand lambda_t > 1, on divise l'objectif par lambda_t pour garder
+        # des gradients dans une plage raisonnable et éviter l'effondrement des poids.
+        if lambda_t > 1.0:
+            objective = objective / lambda_t
 
         opt.zero_grad(); objective.backward(); opt.step()
 
-        # Learning rate scheduling (dataset-specific)
         if dataset_name == "synthetic_confounding":
             if t == 10000:
                 for pg in opt.param_groups: pg['lr'] = 1e-3
@@ -271,17 +286,13 @@ def train_irm(
                 for pg in opt.param_groups: pg['lr'] = 5e-4
             elif t == 30000:
                 for pg in opt.param_groups: pg['lr'] = 1e-4
-            elif t == 40000:
-                for pg in opt.param_groups: pg['lr'] = 5e-5
         elif dataset_name == "synthetic_semi_anti_causal":
-            if t == 15000:
+            if t == 10000:
                 for pg in opt.param_groups: pg['lr'] = 1e-3
-            elif t == 22500:
+            elif t == 20000:
                 for pg in opt.param_groups: pg['lr'] = 5e-4
             elif t == 30000:
                 for pg in opt.param_groups: pg['lr'] = 1e-4
-            elif t == 37500:
-                for pg in opt.param_groups: pg['lr'] = 5e-5
         elif dataset_name == "synthetic_selection":
             if t == 10000:
                 for pg in opt.param_groups: pg['lr'] = 1e-3
@@ -289,8 +300,6 @@ def train_irm(
                 for pg in opt.param_groups: pg['lr'] = 5e-4
             elif t == 30000:
                 for pg in opt.param_groups: pg['lr'] = 1e-4
-            elif t == 40000:
-                for pg in opt.param_groups: pg['lr'] = 5e-5
 
 
         if eval_every and ((t+1) % eval_every == 0) and (val_envs is not None) and (test_env is not None):
@@ -299,7 +308,7 @@ def train_irm(
             test_acc = compute_accuracy(phi, [test_env], device=str(device)) if test_env else 0.0
             
             history['step'].append(t+1)
-            history['loss'].append((emp_risk / E).item())
+            history['loss'].append(emp_risk.item())
             history['train_acc'].append(train_acc)
             history['val_acc'].append(val_acc)
             history['test_acc'].append(test_acc)
@@ -319,6 +328,6 @@ def train_irm(
                 history['w_z'].append(0.0)
                 history['w_y'].append(0.0)
 
-            evaluate_and_log_step("IRM", t+1, phi, envs, val_envs, test_env, device=str(device), loss_val=float((emp_risk / E).item()))
+            evaluate_and_log_step("IRM", t+1, phi, envs, val_envs, test_env, device=str(device), loss_val=float(emp_risk.item()))
 
     return phi, history

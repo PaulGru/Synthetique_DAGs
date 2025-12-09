@@ -122,43 +122,43 @@ def make_env_semi_anti_causal(
     Z  : np.ndarray (n, 1), float32 in {0,1}
         Variable binaire de style (non utilisée comme feature, mais dispo pour analyse).
     """
-    rng = _np_rng(seed)
+    # ✅ FIX CRITIQUE: Seed GLOBALE fixe pour w_true et u
+    # Garantit que la fonction causale est IDENTIQUE entre tous les environnements
+    # C'est l'hypothèse fondamentale d'IRM !
+    rng_global = _np_rng(42)  # Seed fixe pour les vecteurs causaux
+    rng = _np_rng(seed)       # Seed variable pour le reste (échantillonnage)
 
-    # 1) Feature causale : X_z ~ N(0, I_dim_z)
-    X_z = rng.normal(0.0, 1.0, size=(n, dim_z)).astype(np.float32)
-
-    # 2) Vecteur de poids causaux "vrais" : w_true positifs
-    #    Pour garantir rétrocompatibilité: tous les poids sont positifs
-    #    Normalisé pour que la magnitude soit comparable quelle que soit dim_z
-    w_true = np.abs(rng.normal(0.0, 1.0, size=(dim_z,)))
+    # 1) Vecteur de poids causaux "vrais" : w_true (INVARIANT entre envs)
+    w_true = np.abs(rng_global.normal(0.0, 1.0, size=(dim_z,)))
     w_true = w_true / np.linalg.norm(w_true) * np.sqrt(dim_z)
 
-    # 3) Label "propre" : Y* = 1{w_true · X_z > 0}
+    # 2) Direction spurieuse u (INVARIANTE entre envs)
+    u = np.abs(rng_global.normal(0.0, 1.0, size=(dim_y,))).astype(np.float32)
+    u = u / np.linalg.norm(u) * np.sqrt(dim_y)
+
+    # 3) Feature causale : X_z ~ N(0, I_dim_z)
+    X_z = rng.normal(0.0, 1.0, size=(n, dim_z)).astype(np.float32)
+
+    # 4) Label "propre" : Y* = 1{w_true · X_z > 0}
     Y_star = ((X_z @ w_true) > 0).astype(np.float32).reshape(-1, 1)
 
-    # 4) Flip symétrique des labels pour affaiblir le signal causal
+    # 5) Flip symétrique des labels pour affaiblir le signal causal
     Y = Y_star.copy()
     if label_flip > 0.0:
         mask = rng.uniform(0.0, 1.0, size=(n, 1)) < label_flip
         Y[mask] = 1.0 - Y[mask]
 
-    # 5) Variable de style binaire Z = Y XOR Bernoulli(p_spur)
+    # 6) Variable de style binaire Z = Y XOR Bernoulli(p_spur)
     Z = Y.copy()
     flips_z = rng.uniform(0.0, 1.0, size=(n, 1)) < p_spur
     Z[flips_z] = 1.0 - Z[flips_z]
 
-    # 6) Feature spurieuse : X_y = u * Z + bruit, où u ~ N(0, 1)
-    #    u est un vecteur de "direction spurieuse"
-    #    Pour garantir rétrocompatibilité: tous les poids sont positifs (corrélation positive avec Z)
-    u = np.abs(rng.normal(0.0, 1.0, size=(dim_y,))).astype(np.float32)
-    u = u / np.linalg.norm(u) * np.sqrt(dim_y)
-    
-    # X_y = outer(Z, u) + noise
+    # 7) Feature spurieuse : X_y = u * Z + bruit
     X_y = (Z @ u.reshape(1, -1)) + rng.normal(0.0, 0.1, size=(n, dim_y)).astype(np.float32)
     # Standardisation de X_y pour avoir une variance ~1 (comme X_z)
     X_y = (X_y - X_y.mean(axis=0)) / (X_y.std(axis=0) + 1e-8)
 
-    # 7) Features finales : [X_z, X_y]
+    # 8) Features finales : [X_z, X_y]
     Xc = np.concatenate([X_z, X_y], axis=1).astype(np.float32)
 
     return Xc, Y.astype(np.float32), Z.astype(np.float32)
@@ -290,48 +290,56 @@ def make_env_confounding(
     """
     Génère un environnement confounded avec Z binaire :
 
-      C   ~ Ber(0.25)                      (confondeur)
+      C   ~ Ber(0.35)                      (confondeur)
       X_z ~ N(0, I_dim_z)                  (feature causale, ⟂ C)
 
-      Z = C \XOR N^e,   N^e ~ Ber(beta^e), beta^e dans {0.1, 0.2, 0.9}
+      Z = C ⊕ N^e,   N^e ~ Ber(a), a dans {0.01, 0.1, 0.99}
 
-      X_y = u_y * Z + eps,  eps ~ N(0, sigma_y^2)   (feature spurieuse continue)
+      X_y = u * Z                          (feature spurieuse continue)
 
       Y   = sign( w_true * X_z + gamma * (2C - 1) )
-      
-      Puis flip aléatoire avec proba label_flip.
 
       X   = [X_z, X_y]
     """
-    rng = _np_rng(seed)
+    # ✅ FIX CRITIQUE: Seed GLOBALE fixe pour w_true et u
+    # Garantit que le mécanisme causal est IDENTIQUE entre tous les environnements
+    # C'est l'hypothèse fondamentale d'IRM !
+    rng_global = _np_rng(42)  # Seed fixe pour les vecteurs causaux
+    rng = _np_rng(seed)       # Seed variable pour le reste (échantillonnage)
 
-    # 1) Confounder latent C
+    # 1) Vecteur de direction spurieuse u (INVARIANT entre envs)
+    u = np.abs(rng_global.normal(0.0, 1.0, size=(dim_y,)))
+    u = u / np.linalg.norm(u) * np.sqrt(dim_y)
+
+    # 2) Vecteur de poids causaux w_true (INVARIANT entre envs)
+    w_true = np.abs(rng_global.normal(0.0, 1.0, size=(dim_z,)))
+    w_true = w_true / np.linalg.norm(w_true) * np.sqrt(dim_z)
+
+    # 3) Confounder latent C
     C = rng.binomial(1, 0.35, size=(n, 1)).astype(np.float32)
 
-    # 2) Feature causale X_Z^{⊥}, indépendante de C
+    # 4) Feature causale X_Z^{⊥}, indépendante de C
     X_z = rng.normal(0.0, 1.0, size=(n, dim_z)).astype(np.float32)
 
-    # 3) Bruit d'environnement N^e ~ Ber(a) et variable intermédiaire Z = C XOR N^e
+    # 5) Bruit d'environnement N^e ~ Ber(a) et variable intermédiaire Z = C XOR N^e
     N_e = rng.binomial(1, a, size=(n, 1))  # {0,1}
     Z = np.logical_xor(C.astype(bool), N_e.astype(bool)).astype(np.float32)
 
-    # 4) Feature spurieuse X_Y^{⊥} = 2 * Z + eps, eps ~ N(0, sigma_y^2)
-    u = np.abs(rng.normal(0.0, 1.0, size=(dim_y,)))
-    u = u / np.linalg.norm(u) * np.sqrt(dim_y)
-
+    # 6) Feature spurieuse X_Y^{⊥} = u * Z
     X_y = (Z @ u.reshape(1, -1)).astype(np.float32)
     # Standardisation de X_y pour avoir une variance ~1 (comme X_z)
-    # Cela rend les poids w_z et w_y comparables
     X_y = (X_y - X_y.mean(axis=0)) / (X_y.std(axis=0) + 1e-8)
 
-    # 5) Label Y = sign( w_true * X_z + gamma * (2C - 1) )
-    w_true = np.abs(rng.normal(0.0, 1.0, size=(dim_z,)))
-    w_true = w_true / np.linalg.norm(w_true) * np.sqrt(dim_z)  # Échelle selon le paramètre w
-    
-    logit = (X_z @ w_true).reshape(-1, 1) + gamma * (2.0 * C - 1.0)
+    # 7) Label Y = sign( w_true * X_z + gamma * sqrt(dim_z) * (2C - 1) )
+    # ✅ FIX: gamma est multiplié par sqrt(dim_z) pour que le ratio
+    # signal_causal / bruit_confondeur soit constant quelle que soit dim_z.
+    # En effet, X_z @ w_true ~ N(0, dim_z) donc sa std ≈ sqrt(dim_z).
+    # Pour maintenir le même "SNR", on scale gamma par sqrt(dim_z).
+    gamma_scaled = gamma * np.sqrt(dim_z)
+    logit = (X_z @ w_true).reshape(-1, 1) + gamma_scaled * (2.0 * C - 1.0)
     Y = (logit > 0.0).astype(np.float32)
 
-    # 7) Entrée modèle : X = [X_Z^{⊥}, X_Y^{⊥}]
+    # 8) Entrée modèle : X = [X_Z^{⊥}, X_Y^{⊥}]
     Xc = np.concatenate([X_z, X_y], axis=1).astype(np.float32)
 
     # On retourne aussi C (confondeur) pour debug/plots
@@ -502,7 +510,18 @@ def make_env_selection(
     Y  : ndarray (n, 1)  labels {0,1}
     sel_rate : proportion retenue avant tronquage à n
     """
-    rng = _np_rng(seed)
+    # ✅ FIX CRITIQUE: Seed GLOBALE fixe pour w_true et u
+    # Garantit que la fonction causale est IDENTIQUE entre tous les environnements
+    rng_global = _np_rng(42)  # Seed fixe pour les vecteurs causaux
+    rng = _np_rng(seed)       # Seed variable pour le reste (échantillonnage)
+
+    # 1) Vecteur de poids causaux (INVARIANT entre envs)
+    w_true = np.abs(rng_global.normal(0.0, 1.0, size=(dim_z,)))
+    w_true = w_true / np.linalg.norm(w_true) * np.sqrt(dim_z)
+    
+    # 2) Direction spurieuse (INVARIANTE entre envs)
+    u = np.abs(rng_global.normal(0.0, 1.0, size=(dim_y,)))
+    u = u / np.linalg.norm(u) * np.sqrt(dim_y)
 
     kept_Xz, kept_Xy, kept_Y, kept_Z = [], [], [], []
     kept, total = 0, 0
@@ -515,20 +534,16 @@ def make_env_selection(
 
         Xz = rng.normal(0, 1.0, size=(B, dim_z)).astype(np.float32)  # X_Z^{⊥}
 
-        w_true = np.abs(rng.normal(0.0, 1.0, size=(dim_z,)))
-        w_true = w_true / np.linalg.norm(w_true) * np.sqrt(dim_z)
-        Y = ((Xz @ w_true).reshape(-1, 1) > 0.0).astype(np.float32)                                # ∈ {0,1}
+        # Utiliser w_true (déjà généré ci-dessus)
+        Y = ((Xz @ w_true).reshape(-1, 1) > 0.0).astype(np.float32)  # ∈ {0,1}
 
         # Flip symétrique des labels (si demandé)
         if label_flip and label_flip > 0.0:
             flips = rng.uniform(size=Y.shape) < label_flip
             Y[flips] = 1.0 - Y[flips]
 
-        u = np.abs(rng.normal(0.0, 1.0, size=(dim_y,)))
-        u = u / np.linalg.norm(u) * np.sqrt(dim_y)
-
-        # eps_X = rng.normal(0.0, 0.3, size=(B, dim_y)).astype(np.float32)
-        Xy = Z @ u.reshape(1, -1) # + eps_X
+        # Utiliser u (déjà généré ci-dessus)
+        Xy = Z @ u.reshape(1, -1)
 
         # --- Sélection basée sur Z==Y ---
         # "same" <=> Z == Y
@@ -563,10 +578,6 @@ def make_env_selection(
 
     Xc = np.concatenate([Xz_k, Xy_k], axis=1).astype(np.float32)
     sel_rate = kept / total if total > 0 else 0.0
-    
-    # Vérification de la proportion finale Z==Y
-    same_final = (Z_k == Y_k).astype(np.float32).mean()
-    print(f"[Selection alpha={alpha:.2f}] Proportion finale Z==Y: {same_final:.2%} (attendu: {alpha:.2%})")
 
     return Xc, Y_k.astype(np.float32), sel_rate
 

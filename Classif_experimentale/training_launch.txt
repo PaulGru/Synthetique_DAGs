@@ -7,13 +7,13 @@ python main.py
   --n_test 10000
   --val_frac 0.1
   --ps_train 0.1 0.2
-  --p_test_ood 0.9
+  --p_test_ood 1.0
   --label_flip 0.25
   --erm_steps 45000
-  --erm_lr 1e-3
+  --erm_lr 5e-3
   --irm_steps 45000
   --irm_lr 5e-3
-  --irm_lambda 25.0
+  --irm_lambda 220.0
   --model_kind logreg
   --eval_every 5
   --device auto
@@ -30,7 +30,7 @@ python main.py
   --erm_lr 5e-3
   --irm_steps 45000
   --irm_lr 5e-3
-  --irm_lambda 50.0
+  --irm_lambda 250.0
   --model_kind logreg
   --eval_every 10
   --device auto
@@ -42,13 +42,13 @@ python main.py
   --n_test 10000
   --val_frac 0.1
   --sel_alpha_train 0.9 0.8
-  --sel_alpha_test 0.1
+  --sel_alpha_test 0.0
   --sel_label_flip 0.25
   --erm_steps 45000
   --erm_lr 5e-3
   --irm_steps 45000
   --irm_lr 5e-3
-  --irm_lambda 25
+  --irm_lambda 225.0
   --model_kind logreg
   --eval_every 10
   --device auto
