@@ -154,14 +154,14 @@ def make_env_semi_anti_causal(
     Z[flips_z] = 1.0 - Z[flips_z]
 
     # 7) Feature spurieuse : X_y = u * Z + bruit
-    X_y = (Z @ u.reshape(1, -1)) + rng.normal(0.0, 0.1, size=(n, dim_y)).astype(np.float32)
+    X_y = (Z @ u.reshape(1, -1)) + rng.normal(0.0, 1e-3, size=(n, dim_y)).astype(np.float32)
     # Standardisation de X_y pour avoir une variance ~1 (comme X_z)
     X_y = (X_y - X_y.mean(axis=0)) / (X_y.std(axis=0) + 1e-8)
 
     # 8) Features finales : [X_z, X_y]
     Xc = np.concatenate([X_z, X_y], axis=1).astype(np.float32)
 
-    return Xc, Y.astype(np.float32), Z.astype(np.float32)
+    return Xc, Y.astype(np.float32), Z.astype(np.float32), w_true, u
 
 
 def build_envs_semi_anti_causal(
@@ -215,7 +215,7 @@ def build_envs_semi_anti_causal(
 
     train_envs, val_envs = [], []
     for i, p_spur in enumerate(train_p_spurs):
-        Xc, Y, Z = make_env_semi_anti_causal(
+        Xc, Y, Z, w_true, u = make_env_semi_anti_causal(
             n=n,
             p_spur=p_spur,
             seed=seed + i,
@@ -237,11 +237,13 @@ def build_envs_semi_anti_causal(
             "Z": torch.from_numpy(Z_tr),
             "dim_z": dim_z,
             "dim_y": dim_y,
+            "w_true": w_true,
+            "u": u,
         }
         train_envs.append(Env(torch.from_numpy(X_tr), torch.from_numpy(y_tr), meta=meta_train))
 
         # ======== VALIDATION ========
-        Xc_val, Y_val_clean, Z_val = make_env_semi_anti_causal(
+        Xc_val, Y_val_clean, Z_val, w_true_val, u_val = make_env_semi_anti_causal(
             n=y_val.shape[0],
             p_spur=p_spur,
             seed=seed + 5000 + i,
@@ -250,10 +252,10 @@ def build_envs_semi_anti_causal(
             dim_y=dim_y,
         )
         val_envs.append(Env(torch.from_numpy(Xc_val), torch.from_numpy(Y_val_clean),
-                            meta={"p_spur": p_spur, "label_flip": 0.0, "kind": "val", "Z": torch.from_numpy(Z_val), "dim_z": dim_z, "dim_y": dim_y}))
+                            meta={"p_spur": p_spur, "label_flip": 0.0, "kind": "val", "Z": torch.from_numpy(Z_val), "dim_z": dim_z, "dim_y": dim_y, "w_true": w_true_val, "u": u_val}))
 
     # Environnement de test OOD
-    Xc_t, Y_t, Z_t = make_env_semi_anti_causal(
+    Xc_t, Y_t, Z_t, w_true_t, u_t = make_env_semi_anti_causal(
         n=n_test,
         p_spur=test_p_spur,
         seed=seed + 777,
@@ -268,10 +270,219 @@ def build_envs_semi_anti_causal(
         "Z": torch.from_numpy(Z_t),
         "dim_z": dim_z,
         "dim_y": dim_y,
+        "w_true": w_true_t,
+        "u": u_t,
     }
     test_env = Env(torch.from_numpy(Xc_t), torch.from_numpy(Y_t), meta=meta_test)
 
     return train_envs, val_envs, test_env
+
+# =============================================================================
+# 3) anticausal avec Gaussian Shift
+# =============================================================================
+
+def make_env_gaussian_shift(
+    n: int,
+    mu_spur: float,     # Le paramètre clé : la "force" et le "sens" de la corrélation
+    std_spur: float,    # La variance (bruit autour de la moyenne)
+    seed: int,
+    label_flip: float = 0.25, # On garde le bruit sur Y pour que la tâche causale ne soit pas triviale
+    dim_z: int = 1,
+    dim_y: int = 1,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    
+    rng_global = _np_rng(42)  # Invariant
+    rng = _np_rng(seed)       # Variable
+
+    # 1) Vecteurs directeurs invariants
+    w_true = np.abs(rng_global.normal(0.0, 1.0, size=(dim_z,)))
+    w_true = w_true / np.linalg.norm(w_true) * np.sqrt(dim_z)
+
+    u = np.abs(rng_global.normal(0.0, 1.0, size=(dim_y,))).astype(np.float32)
+    u = u / np.linalg.norm(u) * np.sqrt(dim_y)
+
+    # 2) Feature Causale (Invariant)
+    X_z = rng.normal(0.0, 1.0, size=(n, dim_z)).astype(np.float32)
+
+    # 3) Label Y (basé sur X_z)
+    Y_star = ((X_z @ w_true) > 0).astype(np.float32).reshape(-1, 1)
+    
+    # Flip de label (bruit causal)
+    Y = Y_star.copy()
+    if label_flip > 0.0:
+        mask = rng.uniform(0.0, 1.0, size=(n, 1)) < label_flip
+        Y[mask] = 1.0 - Y[mask]
+
+    # =========================================================================
+    # 4) Feature Spurieuse (Gaussian Shift)
+    # =========================================================================
+    
+    # On convertit Y {0, 1} en signe {-1, +1}
+    Y_sign = (Y * 2.0 - 1.0) 
+    
+    # Le centre de la gaussienne dépend de l'environnement (mu_spur)
+    # Mean = Signe * mu_spur * u
+    mean_vec = (Y_sign @ u.reshape(1, -1)) * mu_spur
+    
+    # Bruit gaussien
+    noise = rng.normal(0.0, std_spur, size=(n, dim_y)).astype(np.float32)
+    
+    X_y = mean_vec + noise
+    
+    # ⚠️ IMPORTANT : NE PAS STANDARDISER X_y ICI !
+    # Si on fait (X - mean) / std, on efface le shift qu'on vient de créer.
+    # On veut justement que la moyenne soit différente entre les envs.
+
+    # 5) Concaténation
+    Xc = np.concatenate([X_z, X_y], axis=1).astype(np.float32)
+
+    return Xc, Y.astype(np.float32), w_true, u
+
+
+def build_envs_gaussian_shift(
+    n: int,
+    train_mus: List[float],    # Ex: [1.0, 2.0]
+    test_mu: float,            # Ex: -1.0 (Inversion)
+    std_spur: float,           # Ex: 0.5 (Bruit constant)
+    seed: int,
+    val_frac: float = 0.2,
+    label_flip: float = 0.25,
+    n_test: Optional[int] = None,
+    dim_z: int = 1,
+    dim_y: int = 1,
+) -> Tuple[List[Env], List[Env], Env]:
+
+    if n_test is None: n_test = n
+    train_envs, val_envs = [], []
+
+    # --- TRAIN ENVS ---
+    for i, mu in enumerate(train_mus):
+        Xc, Y, w_true, u = make_env_gaussian_shift(
+            n=n, mu_spur=mu, std_spur=std_spur, seed=seed + i,
+            label_flip=label_flip, dim_z=dim_z, dim_y=dim_y
+        )
+        
+        # Split Train/Val
+        (X_tr, y_tr), (X_val_dummy, y_val_dummy) = _split_numpy(Xc, Y, val_frac, seed + 1000 + i)
+        
+        # Meta-data (utile pour la visu)
+        meta = {
+            "kind": "gaussian_shift",
+            "mu_spur": mu,
+            "std_spur": std_spur,
+            "env_id": i,
+            "w_true": w_true,
+            "u": u,
+            "dim_z": dim_z
+        }
+        train_envs.append(Env(torch.from_numpy(X_tr), torch.from_numpy(y_tr), meta=meta))
+        
+        # Val Env (Régénéré proprement sans flip de label si on veut valider la causalité pure, 
+        # ou avec flip si on valide la tâche noisy. Ici on garde la cohérence avec le train).
+        Xc_v, Y_v, _, _ = make_env_gaussian_shift(
+            n=len(y_val_dummy), mu_spur=mu, std_spur=std_spur, seed=seed + 5000 + i,
+            label_flip=0.0, dim_z=dim_z, dim_y=dim_y # Pas de flip en validation souvent
+        )
+        meta_val = meta.copy(); meta_val["split"] = "val"
+        val_envs.append(Env(torch.from_numpy(Xc_v), torch.from_numpy(Y_v), meta=meta_val))
+
+    # --- TEST ENV (OOD) ---
+    Xc_t, Y_t, w_true_t, u_t = make_env_gaussian_shift(
+        n=n_test, mu_spur=test_mu, std_spur=std_spur, seed=seed + 777,
+        label_flip=0.0, dim_z=dim_z, dim_y=dim_y
+    )
+    meta_test = {
+        "kind": "gaussian_shift",
+        "mu_spur": test_mu,
+        "std_spur": std_spur,
+        "env_id": "test",
+        "w_true": w_true_t,
+        "u": u_t,
+        "dim_z": dim_z
+    }
+    test_env = Env(torch.from_numpy(Xc_t), torch.from_numpy(Y_t), meta=meta_test)
+
+    return train_envs, val_envs, test_env
+
+
+# =============================================================================
+# anti-causal for variance shift
+# =============================================================================
+
+def build_envs_variance_shift(
+    n: int,
+    train_stds: List[float],   # Ce qui varie : le "flou" (Ex: [0.1, 2.0])
+    test_std: float,           # Ex: 5.0 (Très bruité) ou très petit
+    fixed_mu: float,           # La moyenne reste fixe (Ex: 1.0)
+    seed: int,
+    val_frac: float = 0.2,
+    label_flip: float = 0.25,
+    n_test: Optional[int] = None,
+    dim_z: int = 1,
+    dim_y: int = 1,
+) -> Tuple[List[Env], List[Env], Env]:
+
+    if n_test is None: n_test = n
+    train_envs, val_envs = [], []
+
+    # --- TRAIN ENVS (Variance Variable) ---
+    for i, std in enumerate(train_stds):
+        # On utilise la fonction générique gaussian_shift définie précédemment
+        # Mais cette fois, mu est fixe, et std change.
+        Xc, Y, w_true, u = make_env_gaussian_shift(
+            n=n, 
+            mu_spur=fixed_mu,      # FIXE (ex: 1.0)
+            std_spur=std,          # VARIABLE (ex: 0.1 puis 2.0)
+            seed=seed + i,
+            label_flip=label_flip, 
+            dim_z=dim_z, 
+            dim_y=dim_y
+        )
+        
+        (X_tr, y_tr), (X_val_dummy, y_val_dummy) = _split_numpy(Xc, Y, val_frac, seed + 1000 + i)
+        
+        meta = {
+            "kind": "variance_shift",
+            "mu_spur": fixed_mu,
+            "std_spur": std,       # On loggue la variance
+            "env_id": i,
+            "w_true": w_true,
+            "u": u,
+            "dim_z": dim_z
+        }
+        train_envs.append(Env(torch.from_numpy(X_tr), torch.from_numpy(y_tr), meta=meta))
+        
+        # Validation
+        Xc_v, Y_v, _, _ = make_env_gaussian_shift(
+            n=len(y_val_dummy), mu_spur=fixed_mu, std_spur=std, seed=seed + 5000 + i,
+            label_flip=0.0, dim_z=dim_z, dim_y=dim_y
+        )
+        meta_val = meta.copy(); meta_val["split"] = "val"
+        val_envs.append(Env(torch.from_numpy(Xc_v), torch.from_numpy(Y_v), meta=meta_val))
+
+    # --- TEST ENV (OOD Variance) ---
+    Xc_t, Y_t, w_true_t, u_t = make_env_gaussian_shift(
+        n=n_test, 
+        mu_spur=fixed_mu,     # Toujours la même moyenne
+        std_spur=test_std,    # Variance extrême (très petite ou très grande)
+        seed=seed + 777,
+        label_flip=0.0, 
+        dim_z=dim_z, 
+        dim_y=dim_y
+    )
+    meta_test = {
+        "kind": "variance_shift",
+        "mu_spur": fixed_mu,
+        "std_spur": test_std,
+        "env_id": "test",
+        "w_true": w_true_t,
+        "u": u_t,
+        "dim_z": dim_z
+    }
+    test_env = Env(torch.from_numpy(Xc_t), torch.from_numpy(Y_t), meta=meta_test)
+
+    return train_envs, val_envs, test_env
+
 
 
 # =============================================================================
@@ -342,8 +553,56 @@ def make_env_confounding(
     # 8) Entrée modèle : X = [X_Z^{⊥}, X_Y^{⊥}]
     Xc = np.concatenate([X_z, X_y], axis=1).astype(np.float32)
 
-    # On retourne aussi C (confondeur) pour debug/plots
-    return Xc, Y.astype(np.float32), Z.astype(np.float32), C
+    # On retourne aussi C (confondeur) pour debug/plots, ainsi que w_true et u pour l'alignement
+    return Xc, Y.astype(np.float32), Z.astype(np.float32), C, w_true, u
+
+
+def make_env_confounding_varying_pc(
+    n: int,
+    seed: int,
+    gamma: float = 1.0,
+    p_c: float = 0.35,
+    *,
+    dim_z: int = 1,
+    dim_y: int = 1,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Copie de make_env_confounding acceptant p_c en paramètre.
+    Pour l'expérience où l'on fait varier la loi de C.
+    """
+    rng_global = _np_rng(42)
+    rng = _np_rng(seed)
+
+    # 1) Vecteur de direction spurieuse u
+    u = np.abs(rng_global.normal(0.0, 1.0, size=(dim_y,)))
+    u = u / np.linalg.norm(u) * np.sqrt(dim_y)
+
+    # 2) Vecteur de poids causaux w_true
+    w_true = np.abs(rng_global.normal(0.0, 1.0, size=(dim_z,)))
+    w_true = w_true / np.linalg.norm(w_true) * np.sqrt(dim_z)
+
+    # 3) Confounder latent C avec p_c variable
+    C = rng.binomial(1, p_c, size=(n, 1)).astype(np.float32)
+
+    # 4) Feature causale
+    X_z = rng.normal(0.0, 1.0, size=(n, dim_z)).astype(np.float32)
+
+    Z = C
+
+    # 6) Feature spurieuse
+    X_y = (Z @ u.reshape(1, -1)).astype(np.float32)
+    X_y = (X_y - X_y.mean(axis=0)) / (X_y.std(axis=0) + 1e-8)
+
+    # 7) Label Y (C influence le logit avant binarisation)
+    # Ceci crée une vraie corrélation Corr(Y, C) et donc Corr(Y, Z)
+    gamma_scaled = gamma * np.sqrt(dim_z)
+    logit = (X_z @ w_true).reshape(-1, 1) + gamma_scaled * (2.0 * C - 1.0)
+    Y = (logit > 0.0).astype(np.float32)
+
+    # 8) Entrée modèle
+    Xc = np.concatenate([X_z, X_y], axis=1).astype(np.float32)
+
+    return Xc, Y.astype(np.float32), Z.astype(np.float32), C, w_true, u
 
 
 
@@ -390,7 +649,7 @@ def build_envs_confounding(
 
     for i, a_e in enumerate(a_train):
         # ===== TRAIN env i =====
-        Xc, Y, Z, _C = make_env_confounding(
+        Xc, Y, Z, _C, w_true, u = make_env_confounding(
             n=n,
             seed=seed + i,
             a=a_e,
@@ -419,6 +678,10 @@ def build_envs_confounding(
             "gamma": float(gamma),
             "split": "train",
             "env_id": i,
+            "dim_z": dim_z,
+            "dim_y": dim_y,
+            "w_true": w_true,  # Pour calcul d'alignement
+            "u": u,            # Pour calcul d'alignement
             "Z": torch.from_numpy(Z_tr) # Stockage de Z pour analyse
         }
         train_envs.append(
@@ -426,7 +689,7 @@ def build_envs_confounding(
         )
 
         # ===== VAL env i : même a_e, mais sans confounding supplémentaire ni flip de label =====
-        X_val, Y_val, Z_val, _C_val = make_env_confounding(
+        X_val, Y_val, Z_val, _C_val, w_true_val, u_val = make_env_confounding(
             n=n_val,
             seed=seed + 5000 + i,
             a=a_e,
@@ -444,7 +707,7 @@ def build_envs_confounding(
         )
 
     # ===== TEST OOD =====
-    Xc_t, Y_t, Z_t, _C_t = make_env_confounding(
+    Xc_t, Y_t, Z_t, _C_t, w_true_t, u_t = make_env_confounding(
         n=n_test,
         seed=seed + 777,
         a=a_test,
@@ -458,6 +721,121 @@ def build_envs_confounding(
         "gamma": float(gamma),
         "split": "test_ood",
         "env_id": "test",
+        "dim_z": dim_z,
+        "dim_y": dim_y,
+        "w_true": w_true_t,
+        "u": u_t,
+        "Z": torch.from_numpy(Z_t)
+    }
+    test_env = Env(torch.from_numpy(Xc_t), torch.from_numpy(Y_t), None, meta_t)
+
+    return train_envs, val_envs, test_env
+
+
+def build_envs_confounding_varying_pc(
+    n: int,
+    train_p_cs: List[float],     # Liste des p(C) pour les envs de TRAIN
+    test_p_c: float,             # p(C) pour l'env de TEST OOD
+    a: float,                    # a (bruit C->Z) fixé pour tous les envs
+    gamma: float = 1.0,
+    seed: int = 1,
+    val_frac: float = 0.2,
+    n_test: Optional[int] = None,
+    *,
+    dim_z: int = 1,
+    dim_y: int = 1,
+) -> Tuple[List[Env], List[Env], Env]:
+    """
+    Construit un jeu multi-environnements avec confounder où la LOI DE C (p_c) VARIE.
+    
+    C ~ Ber(p_c^e)
+    Lien C -> Z est stable ou légèrement bruité (paramétré par 'a' qui est FIXE).
+    
+    Args:
+        train_p_cs: Liste des probabilités P(C=1) pour chaque env de train.
+        test_p_c: P(C=1) pour l'env de test.
+        a: Paramètre de bruit N^e ~ Ber(a) dans Z = C XOR N^e.
+           Si a est petit (ex: 0.05), Z est un très bon proxy de C stablement.
+    """
+    if n_test is None:
+        n_test = n
+
+    train_envs, val_envs = [], []
+
+    for i, pc_e in enumerate(train_p_cs):
+        # ===== TRAIN env i =====
+        Xc, Y, Z, _C, w_true, u = make_env_confounding_varying_pc(
+            n=n,
+            seed=seed + i,
+            gamma=gamma,
+            p_c=pc_e,      # VARIABLE
+            dim_z=dim_z,
+            dim_y=dim_y,
+        )
+
+        (X_tr, y_tr), (X_val_dummy, y_val_dummy) = _split_numpy(
+            Xc, Y, val_frac, seed + 1000 + i
+        )
+        (Z_tr, _), (_, _) = _split_numpy(Z, Y, val_frac, seed + 1000 + i)
+        
+        n_val = y_val_dummy.shape[0]
+
+        meta_train = {
+            "kind": "confounding_var_pc",
+            "p_c": float(pc_e),
+            "a": float(a),
+            "gamma": float(gamma),
+            "split": "train",
+            "env_id": i,
+            "dim_z": dim_z,
+            "dim_y": dim_y,
+            "w_true": w_true,
+            "u": u,
+            "Z": torch.from_numpy(Z_tr)
+        }
+        train_envs.append(
+            Env(torch.from_numpy(X_tr), torch.from_numpy(y_tr), None, meta_train)
+        )
+
+        # ===== VAL env i =====
+        # On régénère avec le MEME p_c pour valider dans la même distribution
+        X_val, Y_val, Z_val, _C_val, w_true_val, u_val = make_env_confounding_varying_pc(
+            n=n_val,
+            seed=seed + 5000 + i,
+            gamma=gamma,
+            p_c=pc_e,
+            dim_z=dim_z,
+            dim_y=dim_y,
+        )
+        meta_val = {
+            **meta_train,
+            "split": "val",
+            "Z": torch.from_numpy(Z_val)
+        }
+        val_envs.append(
+            Env(torch.from_numpy(X_val), torch.from_numpy(Y_val), None, meta_val)
+        )
+
+    # ===== TEST OOD =====
+    Xc_t, Y_t, Z_t, _C_t, w_true_t, u_t = make_env_confounding_varying_pc(
+        n=n_test,
+        seed=seed + 777,
+        gamma=gamma,
+        p_c=test_p_c, # VARIABLE (OOD)
+        dim_z=dim_z,
+        dim_y=dim_y,
+    )
+    meta_t = {
+        "kind": "confounding_var_pc",
+        "p_c": float(test_p_c),
+        "a": float(a),
+        "gamma": float(gamma),
+        "split": "test_ood",
+        "env_id": "test",
+        "dim_z": dim_z,
+        "dim_y": dim_y,
+        "w_true": w_true_t,
+        "u": u_t,
         "Z": torch.from_numpy(Z_t)
     }
     test_env = Env(torch.from_numpy(Xc_t), torch.from_numpy(Y_t), None, meta_t)
@@ -579,7 +957,7 @@ def make_env_selection(
     Xc = np.concatenate([Xz_k, Xy_k], axis=1).astype(np.float32)
     sel_rate = kept / total if total > 0 else 0.0
 
-    return Xc, Y_k.astype(np.float32), sel_rate
+    return Xc, Y_k.astype(np.float32), sel_rate, w_true, u
 
 
 def build_envs_selection(
@@ -601,7 +979,7 @@ def build_envs_selection(
 
     for i, psi in enumerate(train_alphas):
         # ===== TRAIN : flip de label autorisé =====
-        Xc, Y, rate = make_env_selection(
+        Xc, Y, rate, w_true, u = make_env_selection(
             n=n,
             alpha=psi,
             seed=seed + i,
@@ -617,11 +995,15 @@ def build_envs_selection(
             "label_flip": float(label_flip),
             "sel_rate": rate,
             "split": "train",
+            "dim_z": dim_z,
+            "dim_y": dim_y,
+            "w_true": w_true,
+            "u": u,
         }
         train_envs.append(Env(torch.from_numpy(X_tr), torch.from_numpy(y_tr), None, meta))
 
         # ===== VAL : pas de flip de label =====
-        Xc_val, Y_val, rate_val = make_env_selection(
+        Xc_val, Y_val, rate_val, w_true_val, u_val = make_env_selection(
             n=n,
             alpha=psi,
             seed=seed + 5000 + i,
@@ -635,11 +1017,15 @@ def build_envs_selection(
             "label_flip": 0.0,
             "sel_rate": rate_val,
             "split": "val",
+            "dim_z": dim_z,
+            "dim_y": dim_y,
+            "w_true": w_true_val,
+            "u": u_val,
         }
         val_envs.append(Env(torch.from_numpy(Xc_val), torch.from_numpy(Y_val), None, meta_val))
 
     # ===== TEST : pas de flip de label =====
-    Xc_t, Y_t, rate_t = make_env_selection(
+    Xc_t, Y_t, rate_t, w_true_t, u_t = make_env_selection(
         n=n_test,
         alpha=test_alpha,
         seed=seed + 777,
@@ -653,6 +1039,10 @@ def build_envs_selection(
         "label_flip": 0.0,
         "sel_rate": rate_t,
         "split": "test_ood",
+        "dim_z": dim_z,
+        "dim_y": dim_y,
+        "w_true": w_true_t,
+        "u": u_t,
     }
     test_env = Env(torch.from_numpy(Xc_t), torch.from_numpy(Y_t), None, meta_t)
 

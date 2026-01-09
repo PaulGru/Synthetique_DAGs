@@ -5,13 +5,12 @@ python main.py
   --dataset synthetic_semi_anti_causal
   --n 200000
   --n_test 10000
-  --val_frac 0.1
   --ps_train 0.1 0.2
   --p_test_ood 1.0
   --label_flip 0.25
-  --erm_steps 45000
+  --erm_steps 20000
   --erm_lr 5e-3
-  --irm_steps 45000
+  --irm_steps 20000
   --irm_lr 5e-3
   --irm_lambda 220.0
   --model_kind logreg
@@ -49,6 +48,22 @@ python main.py
   --irm_steps 45000
   --irm_lr 5e-3
   --irm_lambda 225.0
+  --model_kind logreg
+  --eval_every 10
+  --device auto
+
+python main.py
+  --dataset synthetic_confounding_var_pc
+  --n 200000
+  --n_test 10000
+  --val_frac 0.1
+  --conf_pc_train 0.1 0.9
+  --conf_pc_test 0.5
+  --erm_steps 15000
+  --erm_lr 5e-3
+  --irm_steps 15000
+  --irm_lr 5e-3
+  --irm_lambda 250.0
   --model_kind logreg
   --eval_every 10
   --device auto

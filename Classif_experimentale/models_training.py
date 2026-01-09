@@ -72,7 +72,7 @@ def train_erm(
     mlp_hidden: int = 256, mlp_layers: int = 1, mlp_dropout: float = 0.1, mlp_bn: bool = False,
     dataset_name: str = "synthetic_semi_anti_causal"
 ):
-    history = {'step': [], 'loss': [], 'train_acc': [], 'val_acc': [], 'test_acc': [], 'w_z': [], 'w_y': []}
+    history = {'step': [], 'loss': [], 'train_acc': [], 'val_acc': [], 'test_acc': [], 'w_z': [], 'w_y': [], 'align_z': [], 'align_y': [], 'dist_z': [], 'dist_y': []}
 
     torch.manual_seed(seed)
     device = torch.device(resolve_device(device))
@@ -155,9 +155,54 @@ def train_erm(
                 
                 history['w_z'].append(float(np.linalg.norm(w_z_part)))
                 history['w_y'].append(float(np.linalg.norm(w_y_part)))
+                
+                # Compute alignment with true weights (cosine similarity)
+                # Extract w_true and u from environment metadata
+                w_true = envs[0].meta.get('w_true', None) if hasattr(envs[0], 'meta') and envs[0].meta else None
+                u = envs[0].meta.get('u', None) if hasattr(envs[0], 'meta') and envs[0].meta else None
+                
+                if w_true is not None and len(w_z_part) > 0:
+                    # Cosine similarity: (w · w_true) / (||w|| × ||w_true||)
+                    norm_w = np.linalg.norm(w_z_part)
+                    norm_true = np.linalg.norm(w_true)
+                    if norm_w > 1e-8 and norm_true > 1e-8:
+                        align_z = np.dot(w_z_part, w_true) / (norm_w * norm_true)
+                    else:
+                        align_z = 0.0
+                    history['align_z'].append(float(align_z))
+                else:
+                    history['align_z'].append(0.0)
+                
+                if u is not None and len(w_y_part) > 0:
+                    norm_w = np.linalg.norm(w_y_part)
+                    norm_u = np.linalg.norm(u)
+                    if norm_w > 1e-8 and norm_u > 1e-8:
+                        align_y = np.dot(w_y_part, u) / (norm_w * norm_u)
+                    else:
+                        align_y = 0.0
+                    history['align_y'].append(float(align_y))
+                else:
+                    history['align_y'].append(0.0)
+                
+                # Compute Euclidean distance between learned and true weights
+                if w_true is not None and len(w_z_part) > 0:
+                    dist_z = np.linalg.norm(w_z_part - w_true)
+                    history['dist_z'].append(float(dist_z))
+                else:
+                    history['dist_z'].append(0.0)
+                
+                if u is not None and len(w_y_part) > 0:
+                    dist_y = np.linalg.norm(w_y_part - u)
+                    history['dist_y'].append(float(dist_y))
+                else:
+                    history['dist_y'].append(0.0)
             else:
                 history['w_z'].append(0.0)
                 history['w_y'].append(0.0)
+                history['align_z'].append(0.0)
+                history['align_y'].append(0.0)
+                history['dist_z'].append(0.0)
+                history['dist_y'].append(0.0)
 
             evaluate_and_log_step("ERM", t+1, model, envs, val_envs, test_env, device=str(device), loss_val=float(loss.item()))
 
@@ -189,7 +234,7 @@ def train_irm(
     mlp_dropout: float = 0.1, mlp_bn: bool = False,
     dataset_name: str = "synthetic_semi_anti_causal"
 ):
-    history = {'step': [], 'loss': [], 'train_acc': [], 'val_acc': [], 'test_acc': [], 'w_z': [], 'w_y': []}
+    history = {'step': [], 'loss': [], 'train_acc': [], 'val_acc': [], 'test_acc': [], 'w_z': [], 'w_y': [], 'align_z': [], 'align_y': [], 'dist_z': [], 'dist_y': []}
 
     torch.manual_seed(seed)
     device = torch.device(resolve_device(device))
@@ -210,22 +255,14 @@ def train_irm(
     opt = torch.optim.Adam(phi.parameters(), lr=lr, weight_decay=1e-4)
     bce = nn.BCEWithLogitsLoss(reduction='mean')
 
-    def make_loader(env):
-        ds = TensorDataset(env.X, env.y.view(-1).float())
-        return DataLoader(ds, batch_size=batch, shuffle=True, drop_last=False)
-    loaders = [make_loader(e) for e in envs]
-    iters = [iter(ld) for ld in loaders]
-
-    def next_batch(e_idx):
-        try:
-            return next(iters[e_idx])
-        except StopIteration:
-            iters[e_idx] = iter(loaders[e_idx])
-            return next(iters[e_idx])
+    # ✅ FIX: Utiliser tout le dataset comme dans l'implémentation officielle Facebook Research
+    # Cela donne une estimation plus stable de la pénalité IRM (pas de bruit d'échantillonnage)
+    env_data = [(e.X, e.y.view(-1).float()) for e in envs]
 
     E = len(envs)
     
-    warmup_steps = 2000
+    # Warmup proportionnel: 10% des steps total
+    warmup_steps = max(500, int(steps * 0.1))
 
     for t in range(steps):
         phi.train()
@@ -233,24 +270,23 @@ def train_irm(
         # ✅ IMPLÉMENTATION OFFICIELLE IRM (Facebook Research)
         # Source: https://github.com/facebookresearch/InvariantRiskMinimization
         # 
-        # La clé: créer un scale SÉPARÉ pour chaque environnement,
-        # calculer sa pénalité indépendamment, puis moyenner.
+        # Utilise TOUT le dataset à chaque step pour une estimation stable de la pénalité.
         
         emp_risk = 0.0
         penalties = []
         
         for e_idx in range(E):
-            Xb, yb = next_batch(e_idx)
+            X_e, y_e = env_data[e_idx]
             
             # 1. Risque empirique
-            logits = phi(Xb).squeeze()
-            loss_emp = bce(logits, yb.squeeze(-1))
+            logits = phi(X_e).squeeze()
+            loss_emp = bce(logits, y_e)
             emp_risk = emp_risk + loss_emp
             
             # 2. Pénalité IRM pour cet environnement
             # Créer un scale unique pour mesurer le gradient
             scale = torch.tensor(1.0, device=device, requires_grad=True)
-            loss_scaled = bce(logits * scale, yb.squeeze(-1))
+            loss_scaled = bce(logits * scale, y_e)
             grad_scale = grad(loss_scaled, [scale], create_graph=True)[0]
             penalty_e = grad_scale ** 2
             penalties.append(penalty_e)
@@ -279,27 +315,8 @@ def train_irm(
 
         opt.zero_grad(); objective.backward(); opt.step()
 
-        if dataset_name == "synthetic_confounding":
-            if t == 10000:
-                for pg in opt.param_groups: pg['lr'] = 1e-3
-            elif t == 20000:
-                for pg in opt.param_groups: pg['lr'] = 5e-4
-            elif t == 30000:
-                for pg in opt.param_groups: pg['lr'] = 1e-4
-        elif dataset_name == "synthetic_semi_anti_causal":
-            if t == 10000:
-                for pg in opt.param_groups: pg['lr'] = 1e-3
-            elif t == 20000:
-                for pg in opt.param_groups: pg['lr'] = 5e-4
-            elif t == 30000:
-                for pg in opt.param_groups: pg['lr'] = 1e-4
-        elif dataset_name == "synthetic_selection":
-            if t == 10000:
-                for pg in opt.param_groups: pg['lr'] = 1e-3
-            elif t == 20000:
-                for pg in opt.param_groups: pg['lr'] = 5e-4
-            elif t == 30000:
-                for pg in opt.param_groups: pg['lr'] = 1e-4
+        # NOTE: LR scheduling désactivé pour IRM car il causait l'effondrement des poids.
+        # Avec le rescaling Facebook Research, un LR constant fonctionne mieux.
 
 
         if eval_every and ((t+1) % eval_every == 0) and (val_envs is not None) and (test_env is not None):
@@ -324,10 +341,192 @@ def train_irm(
                 
                 history['w_z'].append(float(np.linalg.norm(w_z_part)))
                 history['w_y'].append(float(np.linalg.norm(w_y_part)))
+                
+                # Compute alignment with true weights (cosine similarity)
+                w_true = envs[0].meta.get('w_true', None) if hasattr(envs[0], 'meta') and envs[0].meta else None
+                u = envs[0].meta.get('u', None) if hasattr(envs[0], 'meta') and envs[0].meta else None
+                
+                if w_true is not None and len(w_z_part) > 0:
+                    norm_w = np.linalg.norm(w_z_part)
+                    norm_true = np.linalg.norm(w_true)
+                    if norm_w > 1e-8 and norm_true > 1e-8:
+                        align_z = np.dot(w_z_part, w_true) / (norm_w * norm_true)
+                    else:
+                        align_z = 0.0
+                    history['align_z'].append(float(align_z))
+                else:
+                    history['align_z'].append(0.0)
+                
+                if u is not None and len(w_y_part) > 0:
+                    norm_w = np.linalg.norm(w_y_part)
+                    norm_u = np.linalg.norm(u)
+                    if norm_w > 1e-8 and norm_u > 1e-8:
+                        align_y = np.dot(w_y_part, u) / (norm_w * norm_u)
+                    else:
+                        align_y = 0.0
+                    history['align_y'].append(float(align_y))
+                else:
+                    history['align_y'].append(0.0)
+                
+                # Compute Euclidean distance between learned and true weights
+                if w_true is not None and len(w_z_part) > 0:
+                    dist_z = np.linalg.norm(w_z_part - w_true)
+                    history['dist_z'].append(float(dist_z))
+                else:
+                    history['dist_z'].append(0.0)
+                
+                if u is not None and len(w_y_part) > 0:
+                    dist_y = np.linalg.norm(w_y_part - u)
+                    history['dist_y'].append(float(dist_y))
+                else:
+                    history['dist_y'].append(0.0)
             else:
-                history['w_z'].append(0.0)
-                history['w_y'].append(0.0)
+                history['w_z'].append(0.0); history['w_y'].append(0.0)
+                history['align_z'].append(0.0); history['align_y'].append(0.0)
+                history['dist_z'].append(0.0); history['dist_y'].append(0.0)
 
             evaluate_and_log_step("IRM", t+1, phi, envs, val_envs, test_env, device=str(device), loss_val=float(emp_risk.item()))
+
+    return phi, history
+
+
+# =============================
+# IB-IRM (Invariant Information Bottleneck)
+# =============================
+
+def extract_features(model: nn.Module, x: torch.Tensor) -> torch.Tensor:
+    """
+    Extrait la représentation Φ(X) depuis le modèle.
+    
+    Pour MLP : features de la dernière couche cachée (avant classificateur final)
+    Pour LogReg : X directement
+    """
+    if isinstance(model, LogisticReg):
+        return x
+    elif isinstance(model, SmallMLP):
+        # On veut récupérer l'avant-dernière couche (juste avant la projection finale)
+        # Structurallement SmallMLP.net est un Sequential.
+        # La dernière couche est Linear(hidden, out_dim).
+        # On veut tout sauf la dernière couche.
+        out = x
+        for layer in model.net[:-1]:
+            out = layer(out)
+        return out
+    else:
+        # Fallback pour d'autres modèles non supportés explicitement
+        return x
+
+def train_ib_irm(
+    envs: List[Env], steps: int = 500, lr: float = 1e-3, batch: int = 256,
+    irm_lambda: float = 5000.0, ib_gamma: float = 1e-2, 
+    warmup_steps: int = 0,
+    seed: int = 0, device: str = "cpu",
+    eval_every: int = 0, val_envs: Optional[List[Env]] = None,
+    test_env: Optional[Env] = None,
+    model_kind: str = "mlp",
+    mlp_hidden: int = 256, mlp_layers: int = 1,
+    mlp_dropout: float = 0.1, mlp_bn: bool = False,
+    dataset_name: str = "synthetic_semi_anti_causal"
+):
+    history = {'step': [], 'loss': [], 'train_acc': [], 'val_acc': [], 'test_acc': [], 
+               'w_z': [], 'w_y': [], 'align_z': [], 'align_y': [], 'dist_z': [], 'dist_y': [],
+               'var_penalty': []}
+
+    torch.manual_seed(seed)
+    device = torch.device(resolve_device(device))
+    envs = [Env(e.X.to(device), e.y.to(device), getattr(e, 'y_true', None), getattr(e, 'meta', None)) for e in envs]
+    if val_envs is not None:
+        val_envs = [Env(e.X.to(device), e.y.to(device), getattr(e, 'y_true', None), getattr(e, 'meta', None)) for e in val_envs]
+    if test_env is not None:
+        test_env = Env(test_env.X.to(device), test_env.y.to(device), getattr(test_env, 'y_true', None), getattr(test_env, 'meta', None))
+
+    d_in = int(envs[0].X.shape[1])
+    
+    if model_kind == "logreg":
+        print("WARNING: IB-IRM avec Logistic Regression n'est pas recommandé car Var(Phi) est constant ou linéaire.")
+        phi = LogisticReg(d_in=d_in).to(device)
+    else:
+        phi = SmallMLP(d_in=d_in, hidden=mlp_hidden, n_layers=mlp_layers,
+                       dropout=mlp_dropout, bn=mlp_bn, out_dim=1).to(device)
+
+    opt = torch.optim.Adam(phi.parameters(), lr=lr, weight_decay=1e-4)
+    bce = nn.BCEWithLogitsLoss(reduction='mean')
+
+    env_data = [(e.X, e.y.view(-1).float()) for e in envs]
+    E = len(envs)
+    
+    warmup_steps = max(500, int(steps * 0.1))
+
+    for t in range(steps):
+        phi.train()
+        
+        emp_risk = 0.0
+        penalties = []
+        all_logits = []
+
+        for e_idx in range(E):
+            X_e, y_e = env_data[e_idx]
+            
+            # 1. Risque empirique
+            logits = phi(X_e).squeeze()
+            loss_emp = bce(logits, y_e)
+            emp_risk = emp_risk + loss_emp
+            
+            # 2. Pénalité IRM
+            scale = torch.tensor(1.0, device=device, requires_grad=True)
+            loss_scaled = bce(logits * scale, y_e)
+            grad_scale = grad(loss_scaled, [scale], create_graph=True)[0]
+            penalty_e = grad_scale ** 2
+            penalties.append(penalty_e)
+            
+            # 3. Collecte logits pour Var(Phi)
+            # Dans la formulation IRM stricte, Phi(X) est la sortie du réseau (logits)
+            all_logits.append(logits)
+        
+        # Moyennes
+        emp_risk = emp_risk / E
+        penalty = torch.stack(penalties).mean()
+        
+        # 4. Pénalité de Variance (IB)
+        # Var(Phi) = variance des logits (sorties de Phi)
+        all_logits_cat = torch.cat(all_logits, dim=0)
+        # Centrage
+        logits_centered = all_logits_cat - all_logits_cat.mean()
+        # Variance empirique
+        var_penalty = (logits_centered ** 2).mean() 
+        
+        # Gestion du warmup pour gamma (IB)
+        if t < warmup_steps:
+            alpha = t / float(warmup_steps)
+            gamma_t = alpha * ib_gamma
+        else:
+            gamma_t = ib_gamma
+
+        # Loss finale
+        objective = emp_risk + irm_lambda * penalty + gamma_t * var_penalty
+
+        if irm_lambda > 1.0:
+            objective = objective / irm_lambda
+
+        opt.zero_grad(); objective.backward(); opt.step()
+
+        if eval_every and ((t+1) % eval_every == 0) and (val_envs is not None) and (test_env is not None):
+            train_acc = compute_accuracy(phi, envs, device=str(device))
+            val_acc = compute_accuracy(phi, val_envs, device=str(device)) if val_envs else 0.0
+            test_acc = compute_accuracy(phi, [test_env], device=str(device)) if test_env else 0.0
+            
+            history['step'].append(t+1)
+            history['loss'].append(emp_risk.item())
+            history['var_penalty'].append(var_penalty.item())
+            history['train_acc'].append(train_acc)
+            history['val_acc'].append(val_acc)
+            history['test_acc'].append(test_acc)
+
+            # Note: On ne log pas les poids pour IB-IRM avec MLP (simplification)
+            history['w_z'].append(0.0); history['w_y'].append(0.0)
+            history['align_z'].append(0.0); history['align_y'].append(0.0)
+            history['dist_z'].append(0.0); history['dist_y'].append(0.0)
+
+            evaluate_and_log_step("IB-IRM", t+1, phi, envs, val_envs, test_env, device=str(device), loss_val=float(emp_risk.item()))
 
     return phi, history

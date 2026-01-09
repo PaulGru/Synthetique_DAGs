@@ -5,7 +5,7 @@ from sklearn.metrics import accuracy_score
 from data_synth import build_envs_confounding, build_envs_semi_anti_causal, build_envs_selection
 
 def analyze_correlations():
-    datasets = ['synthetic_semi_anti_causal', 'synthetic_selection', 'synthetic_confounding']
+    datasets = ['synthetic_confounding']
     
     for dataset_name in datasets:
         print(f"\n{'='*50}")
@@ -47,7 +47,7 @@ def analyze_correlations():
             val_frac = 0.1
             conf_a_train = [0.01, 0.11]
             conf_a_test = 0.99
-            conf_gamma = 1.2
+            conf_gamma = 1.1
             seed = 1
 
             print("Parameters:")

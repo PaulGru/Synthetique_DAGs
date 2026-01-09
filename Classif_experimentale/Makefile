@@ -5,7 +5,7 @@ PYTHON = uv run
 N = 200000
 N_TEST = 10000
 VAL_FRAC = 0.1
-ERM_STEPS = 45
+ERM_STEPS = 45000
 ERM_LR = 5e-3
 IRM_STEPS = 45000
 IRM_LR = 5e-3
@@ -49,7 +49,7 @@ confounding:
 		--erm_lr $(ERM_LR) \
 		--irm_steps $(IRM_STEPS) \
 		--irm_lr $(IRM_LR) \
-		--irm_lambda 720.0 \
+		--irm_lambda 5000.0 \
 		--model_kind $(MODEL_KIND) \
 		--eval_every 10 \
 		--device $(DEVICE)

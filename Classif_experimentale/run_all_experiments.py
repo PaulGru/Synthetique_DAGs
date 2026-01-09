@@ -18,10 +18,13 @@ experiments = {
         "ps_train": "0.1 0.2",
         "p_test_ood": 1.0,
         "label_flip": 0.25,
-        "erm_steps": 45000,
-        "irm_steps": 45000,
+        "erm_steps": 10000,
+        "irm_steps": 10000,
         "irm_lambda": 220.0,
-        "model_kind": "logreg",
+        "ib_irm_steps": 10000,
+        "ib_irm_lambda": 220.0,
+        "ib_irm_gamma": 1e-2,
+        "model_kind": "mlp",
         "eval_every": 10,
         "output_dir": "plot_anti_causal"
     },
@@ -32,10 +35,13 @@ experiments = {
         "conf_a_train": "0.01 0.11",
         "conf_a_test": 0.99,
         "label_flip": 0.0,
-        "erm_steps": 45000,
-        "irm_steps": 45000,
+        "erm_steps": 10000,
+        "irm_steps": 10000,
         "irm_lambda": 250.0,
-        "model_kind": "logreg",
+        "ib_irm_steps": 10000,
+        "ib_irm_lambda": 250.0,
+        "ib_irm_gamma": 1e-2,
+        "model_kind": "mlp",
         "eval_every": 10,
         "output_dir": "plot_confounding"
     },
@@ -46,10 +52,13 @@ experiments = {
         "sel_alpha_train": "0.9 0.8",
         "sel_alpha_test": 0.0,
         "label_flip": 0.25,
-        "erm_steps": 45000,
-        "irm_steps": 45000,
+        "erm_steps": 10000,
+        "irm_steps": 10000,
         "irm_lambda": 225.0,
-        "model_kind": "logreg",
+        "ib_irm_steps": 10000,
+        "ib_irm_lambda": 225.0,
+        "ib_irm_gamma": 1e-2,
+        "model_kind": "mlp",
         "eval_every": 10,
         "output_dir": "plot_selection"
     }
@@ -67,6 +76,11 @@ def build_command(exp_name, config):
     cmd.extend(["--erm_steps", str(config["erm_steps"])])
     cmd.extend(["--irm_steps", str(config["irm_steps"])])
     cmd.extend(["--irm_lambda", str(config["irm_lambda"])])
+    # IB-IRM args
+    cmd.extend(["--ib_irm_steps", str(config.get("ib_irm_steps", 10000))])
+    cmd.extend(["--ib_irm_lambda", str(config.get("ib_irm_lambda", 5000.0))])
+    cmd.extend(["--ib_irm_gamma", str(config.get("ib_irm_gamma", 1e-2))])
+    
     cmd.extend(["--model_kind", config["model_kind"]])
     cmd.extend(["--eval_every", str(config["eval_every"])])
     cmd.extend(["--device", "auto"])
@@ -107,7 +121,7 @@ def run_experiment(exp_name, config):
         # Déplacer les plots
         plot_dir = Path("plot")
         if plot_dir.exists():
-            for plot_file in ["comparison_accuracy.png", "comparison_weights.png", "comparison_loss.png"]:
+            for plot_file in ["comparison_accuracy.png", "comparison_weights.png", "comparison_loss.png", "comparison_alignment.png", "comparison_distance.png", "variance_evolution.png"]:
                 src = plot_dir / plot_file
                 if src.exists():
                     dst = output_dir / plot_file
