@@ -727,6 +727,11 @@ def compute_size_thresholds(
         # Choisir des seuils qui créent ~40% d'exemples typiques
         t1 = np.percentile(ham_lengths, 60)
         t2 = np.percentile(spam_lengths, 40)
+    elif method == "soft":
+        # "Soft" selection: HAM < 40th, SPAM > 60th
+        # Less extreme than quartile (25/75), keeps more examples and reduces size gap
+        t1 = np.percentile(ham_lengths, 35)
+        t2 = np.percentile(spam_lengths, 65)
     else:
         raise ValueError(f"Unknown method: {method}")
     
@@ -953,4 +958,358 @@ def build_envs_nlp_size_selection(
     print(f"   - {len(val_envs)} envs de validation ({sum(e.X.shape[0] for e in val_envs)} SMS)")
     print(f"   - 1 env de test OOD ({test_env.X.shape[0]} SMS extrêmes opposés)")
     
+    return train_envs, val_envs, test_env
+
+
+# =============================================================================
+# Varying Confounder Helper (Text + Token -> Y)
+# =============================================================================
+
+def get_base_logit(text, model):
+    """
+    Returns the logit of the base classifier for a given text.
+    """
+    # Proba class 1
+    prob = model.predict_proba([text])[0][1]
+    # Logit = log(p / (1-p))
+    epsilon = 1e-6
+    prob = np.clip(prob, epsilon, 1 - epsilon)
+    return np.log(prob / (1 - prob))
+
+# =============================================================================
+# Construction d'environnements avec Varying Confounder (NLP)
+# =============================================================================
+
+def build_envs_nlp_varying_confounder(
+    n: int,
+    train_gammas: List[float],
+    test_gamma: float,
+    seed: int,
+    val_frac: float = 0.2,
+    bert_model: str = "bert-base-uncased",
+    max_length: int = 128,
+    device: str = "cpu",
+    pooling: str = "mean",
+) -> Tuple[List[Env], List[Env], Env]:
+    """
+    Construit des environnements NLP avec un confondeur variable.
+    
+    Y dépend de X_base (contenu) ET de C (confondeur injecté).
+    
+    Logique:
+    1. On prend un SMS.
+    2. On calcule son "logit naturel" via un classifieur pré-entraîné (proxy pour W*X_z).
+    3. On standardise ces logits (mean=0, std=1) pour que gamma ait un sens.
+    4. On tire un confondeur C (+1 ou -1) aléatoirement.
+    5. On injecte le token correspondant à C dans le texte.
+    6. On calcule le nouveau Label Y:
+       Logit_Final = Logit_Naturel_Std + gamma * C
+       Y = 1 si Logit_Final > 0 sinon 0.
+       
+    Tokens:
+    C = +1  -> "winner"
+    C = -1  -> "news"
+    
+    Parameters
+    ----------
+    n : int
+        Nombre d'exemples par environnement.
+    train_gammas : List[float]
+        Force du confondeur pour chaque environnement d'entraînement.
+    test_gamma : float
+        Force du confondeur pour le test (généralement 0 ou inversé).
+    """
+    import joblib
+    
+    print("Chargement du dataset SMS Spam...")
+    all_texts, all_labels = load_sms_spam_dataset(seed=seed)
+    
+    print("Chargement du modèle de base (Oracle)...")
+    try:
+        base_model = joblib.load('base_spam_model.pkl')
+    except:
+        print("Erreur: base_spam_model.pkl introuvable. Veuillez lancer train_base_model.py d'abord.")
+        return [], [], None
+
+    # --- Pre-calcul et Standardisation des Logits ---
+    print("Pré-calcul des logits de base pour tout le dataset...")
+    all_probs = base_model.predict_proba(all_texts)[:, 1]
+    epsilon = 1e-6
+    all_probs = np.clip(all_probs, epsilon, 1 - epsilon)
+    all_raw_logits = np.log(all_probs / (1 - all_probs))
+    
+    logit_mean = np.mean(all_raw_logits)
+    logit_std = np.std(all_raw_logits)
+    print(f"Stats Logits Brut: Mean={logit_mean:.2f}, Std={logit_std:.2f}")
+    
+    all_base_logits = (all_raw_logits - logit_mean) / logit_std
+    print(f"Logits Standardisés: Mean={np.mean(all_base_logits):.2f}, Std={np.std(all_base_logits):.2f}")
+
+    # --- Calcule des Directions pour le Tracking des Poids ---
+    print("Calcul des directions sémantique et confounder...")
+    # 1. Direction Sémantique (Mean Spam - Mean Ham sur textes ORIGINAUX)
+    # On prend un subset pour aller vite
+    sub_indices = np.random.choice(len(all_texts), min(2000, len(all_texts)), replace=False)
+    sub_texts = [all_texts[i] for i in sub_indices]
+    sub_X = tokenize_and_embed_with_bert(sub_texts, bert_model, max_length, device, pooling)
+    
+    sub_Y = np.array([all_labels[i] for i in sub_indices])
+    
+    mean_spam = np.mean(sub_X[sub_Y == 1], axis=0)
+    mean_ham = np.mean(sub_X[sub_Y == 0], axis=0)
+    dir_sem = mean_spam - mean_ham
+    dir_sem = dir_sem / np.linalg.norm(dir_sem)
+    
+    # 2. Direction Confounder (Token "winner" - Token "news")
+    # On embedde juste ces deux mots
+    X_tokens = tokenize_and_embed_with_bert(["winner", "news"], bert_model, max_length, device, pooling)
+    dir_conf = X_tokens[0] - X_tokens[1]
+    dir_conf = dir_conf / np.linalg.norm(dir_conf)
+    
+    # Orthogonalité ?
+    print(f"Angle entre Sémantique et Confounder: {np.degrees(np.arccos(np.clip(np.dot(dir_sem, dir_conf), -1, 1))):.2f}°")
+    
+    meta_dirs = {"dir_sem": dir_sem, "dir_conf": dir_conf}
+
+    rng = np.random.default_rng(seed)
+    
+    # Tokens confondeurs
+    token_pos = "winner" # C=+1 (pousse vers Spam)
+    token_neg = "news"   # C=-1 (pousse vers Ham)
+    
+    envs = []
+    
+    # Fonction interne pour créer un env
+    def create_env(n_samples, gamma, seed_env, kind="train"):
+        rng_env = np.random.default_rng(seed_env)
+        
+        # 1. Echantillonner n indices au hasard
+        indices = rng_env.choice(len(all_texts), n_samples, replace=True)
+        batch_texts = [all_texts[i] for i in indices]
+        base_logits = all_base_logits[indices] # Utiliser les versions standardisées
+        
+        # 2. Tirer C ~ Rademacher (+1 ou -1)
+        C = rng_env.choice([-1, 1], size=n_samples)
+        
+        new_texts = []
+        new_labels = []
+        
+        # 3. Injecter token et calculer Y
+        final_logits = base_logits + gamma * C
+        new_labels = (final_logits > 0).astype(np.float32)
+        
+        for t, c in zip(batch_texts, C):
+            token = token_pos if c == 1 else token_neg
+            new_texts.append(f"{token} {t}")
+            
+        # 4. Embeddings BERT
+        X = tokenize_and_embed_with_bert(new_texts, bert_model, max_length, device, pooling)
+        Y = new_labels.reshape(-1, 1)
+        
+        # Fusionner meta et directions
+        meta = {"gamma": gamma, "kind": kind}
+        meta.update(meta_dirs)
+        
+        return Env(torch.from_numpy(X), torch.from_numpy(Y), meta=meta)
+
+    train_envs = []
+    val_envs = []
+    
+    # --- TRAIN ---
+    for i, gamma in enumerate(train_gammas):
+        print(f"Génération Train Env {i} (gamma={gamma})...")
+        # Train
+        env_train = create_env(n, gamma, seed + i, kind="train")
+        train_envs.append(env_train)
+        
+        # Val (10% de n)
+        env_val = create_env(int(n * val_frac), gamma, seed + 1000 + i, kind="val")
+        val_envs.append(env_val)
+        
+    # --- TEST ---
+    print(f"Génération Test Env (gamma={test_gamma})...")
+    test_env = create_env(n, test_gamma, seed + 999, kind="test")
+    
+    return train_envs, val_envs, test_env
+
+
+# =============================================================================
+# NLP Custom Confounding (analogue de custom_confounding synthétique)
+# =============================================================================
+#
+# DAG :
+#   Text  ──────────────────────────────────────────▶  Y (label)
+#   U ~ Bern(0.5)  ──── α ──────────────────────────▶  Y (confondeur latent)
+#   U  ──── Z = U ⊕ Bern(a_e)  ──── token injecté  ──▶  X_spurious
+#
+# Ce qui varie entre les envs : a_e (bruit sur le lien U → Z)
+#   a_e faible → token très corrélé à U (et donc à Y)   [train]
+#   a_e fort   → token presque indépendant de U           [test OOD]
+#
+# Paramètres clés :
+#   train_a  : liste des a_e pour les envs de train
+#   test_a   : a_e pour le test OOD
+#   alpha    : force de la perturbation du label par U (0=U sans effet, 1=U domine)
+# =============================================================================
+
+def _inject_token_from_z(
+    text: str,
+    z: int,
+    spurious_tokens: Dict[str, str],
+    position: str = "prefix",
+) -> str:
+    """Injecte le token correspondant à Z∈{0,1} dans le texte.
+
+    Z=1 → token "spam_correlated" (rouge / winner / ...)
+    Z=0 → token "ham_correlated"  (vert  / news   / ...)
+    """
+    token = spurious_tokens["spam_correlated"] if z == 1 else spurious_tokens["ham_correlated"]
+    if position == "prefix":
+        return f"{token} {text}"
+    return f"{text} {token}"
+
+
+def build_envs_nlp_custom_confounding(
+    train_a: List[float],
+    test_a: float,
+    seed: int = 1,
+    alpha: float = 0.5,
+    val_frac: float = 0.1,
+    bert_model: str = "bert-base-uncased",
+    max_length: int = 128,
+    device: str = "cpu",
+    pooling: str = "mean",
+    # paramètres ignorés (pour compatibilité avec la signature NLP générique)
+    n: int = 0,
+    n_test: Optional[int] = None,
+) -> Tuple[List[Env], List[Env], Env]:
+    """Construit des environnements NLP avec le mécanisme custom_confounding.
+
+    DAG :
+        Text ──→ Y_base  (signal causal texte → label)
+        U ~Bernoulli(0.5) ──→ Y_final  (confondeur latent perturbe le label via alpha)
+        Z = U ⊕ Bernoulli(a_e) ──→ token injecté  (proxy bruité de U)
+
+    Ce qui varie entre les envs : a_e (fiabilité du token comme proxy de U).
+    En train : a_e faible → token très corrélé à U (et donc à Y).
+    En test OOD : a_e fort → corrélation inversée / bruit maximal.
+
+    Parameters
+    ----------
+    train_a : List[float]
+        Liste des taux de flip a_e pour les environs de train.
+        a_e=0.05 → token = U avec 95% de fiabilité.
+        a_e=0.15 → token = U avec 85% de fiabilité.
+    test_a : float
+        Taux de flip pour le test OOD.
+        a_e=0.90 → token est INVERSÉ par rapport à U (corrélation spurieuse inversée).
+    alpha : float
+        Force de la perturbation du label par U.
+        0.0 = U n'afecte pas Y (pas de confounding).
+        0.5 = U et texte ont une influence comparable.
+        1.0 = U domine totalement Y (signal text ignoré).
+    seed : int
+        Graine aléatoire.
+    val_frac : float
+        Fraction de validation (prise dans split train global).
+    bert_model, max_length, device, pooling : str / int
+        Config BERT (identique aux autres fonctions NLP).
+
+    Returns
+    -------
+    train_envs, val_envs, test_env
+    """
+    print("Chargement du dataset SMS Spam...")
+    all_texts, all_labels = load_sms_spam_dataset(seed=seed)
+    n_total = len(all_texts)
+    print(f"Dataset chargé : {n_total} SMS")
+
+    # ── Split global 80/10/10 (même logique que build_envs_nlp_semi_anti_causal) ──
+    rng = np.random.default_rng(seed)
+    indices = rng.permutation(n_total)
+    n_test_split = int(n_total * 0.1)
+    n_val_split  = int(n_total * 0.1)
+
+    test_indices  = indices[:n_test_split]
+    val_indices   = indices[n_test_split:n_test_split + n_val_split]
+    train_indices = indices[n_test_split + n_val_split:]
+
+    print(f"\nSplit: Train {len(train_indices)} | Val {len(val_indices)} | Test {len(test_indices)}")
+
+    n_envs = len(train_a)
+    samples_per_env = len(train_indices) // n_envs
+
+    spurious_tokens = define_spurious_tokens()
+    train_envs, val_envs = [], []
+
+    # ────────────────────────── FONCTION INTERNE ──────────────────────────────
+    def _make_env(text_indices: np.ndarray, a_e: float, rng_e: np.random.Generator,
+                  kind: str, env_seed: int) -> Env:
+        """Génère un Env NLP custom-confounding pour un jeu d'indices donné."""
+        texts  = [all_texts[j] for j in text_indices]
+        y_base = np.array([all_labels[j] for j in text_indices], dtype=np.float32)
+        n_e    = len(texts)
+
+        # 1. Confondeur latent U ~ Bernoulli(0.5)
+        U = rng_e.integers(0, 2, size=n_e).astype(np.float32)  # {0, 1}
+
+        # 2. Perturber le label via U : override (pas flip)
+        #    Avec probabilité alpha, Y = U (U détermine directement le label)
+        #    Sinon, Y = Y_base (signal causal textuel)
+        #
+        #    Résultat :
+        #      P(Y=1 | U=1) = (1-alpha) × P(Y_base=1) + alpha × 1  = haute
+        #      P(Y=1 | U=0) = (1-alpha) × P(Y_base=1) + alpha × 0  = basse
+        #    → corrélation forte entre U (et donc Z) et Y_final
+        override_mask = rng_e.uniform(size=n_e) < alpha
+        y_final = y_base.copy()
+        y_final[override_mask] = U[override_mask]  # Y = U pour ces exemples
+
+        # 3. Z = U ⊕ Bernoulli(a_e)  (proxy bruité)
+        noise = rng_e.uniform(size=n_e) < a_e
+        Z = U.copy()
+        Z[noise] = 1.0 - Z[noise]
+        Z = Z.astype(int)
+
+        # 4. Injecter le token basé sur Z
+        texts_mod = [_inject_token_from_z(t, int(z), spurious_tokens) for t, z in zip(texts, Z)]
+
+        # 5. Embeddings BERT
+        X = tokenize_and_embed_with_bert(texts_mod, bert_model, max_length, device, pooling)
+        Y = y_final.reshape(-1, 1)
+
+        return Env(
+            torch.from_numpy(X), torch.from_numpy(Y),
+            meta={
+                "kind": f"nlp_custom_confounding_{kind}",
+                "a": a_e,
+                "alpha": alpha,
+                "n_samples": n_e,
+            }
+        )
+
+    # ───────────────────────── TRAIN + VAL ENVS ─────────────────────────────
+    for i, a_e in enumerate(train_a):
+        print(f"\n=== Train Env {i} (a={a_e}, alpha={alpha}) ===")
+        start = i * samples_per_env
+        end   = (i + 1) * samples_per_env if i < n_envs - 1 else len(train_indices)
+        env_idx = train_indices[start:end]
+
+        rng_tr = np.random.default_rng(seed + i)
+        train_envs.append(_make_env(env_idx, a_e, rng_tr, kind="train", env_seed=seed + i))
+
+        # Validation : même pool de validation commun, réutilisé avec le même a_e
+        print(f"=== Val Env {i} ===")
+        rng_val = np.random.default_rng(seed + 5000 + i)
+        val_envs.append(_make_env(val_indices, a_e, rng_val, kind="val", env_seed=seed + 5000 + i))
+
+    # ───────────────────────────── TEST OOD ─────────────────────────────────
+    print(f"\n=== Test OOD (a={test_a}, alpha={alpha}) ===")
+    rng_test = np.random.default_rng(seed + 777)
+    test_env = _make_env(test_indices, test_a, rng_test, kind="test_ood", env_seed=seed + 777)
+
+    print(
+        f"\n✅ Done! Train: {sum(e.X.shape[0] for e in train_envs)} | "
+        f"Val: {val_envs[0].X.shape[0]} | Test: {test_env.X.shape[0]}"
+    )
     return train_envs, val_envs, test_env

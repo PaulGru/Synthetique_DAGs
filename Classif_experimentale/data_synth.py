@@ -82,16 +82,17 @@ def _split_numpy(X: np.ndarray, Y: np.ndarray, val_frac: float, seed: int):
 #     corrélation spurious, tout en gardant le mécanisme X_z -> Y invariant.
 
 
-def make_env_semi_anti_causal(
+def _generate_semi_anti_causal(
     n: int,
     p_spur: float,
     seed: int,
     label_flip: float = 0.25,
     dim_z: int = 1,
     dim_y: int = 1,
+    causal_strength: float = 1.0
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    Jouet semi anti-causal : X_z -> Y -> Z -> X_y, avec Z binaire.
+    Génère n échantillons du modèle semi anti-causal X_z -> Y -> Z -> X_y.
 
     Paramètres
     ----------
@@ -112,6 +113,10 @@ def make_env_semi_anti_causal(
         Dimension de la feature causale X_z (défaut: 1).
     dim_y : int, optional
         Dimension de la feature spurieuse X_y (défaut: 1).
+    causal_strength : float, optional
+        Facteur multiplicatif pour la variance de X_z.
+        Plus grand = meilleure séparation visuelle entre Y=0 et Y=1.
+        Défaut: 1.0 (variance standard N(0,1)).
 
     Renvoie
     -------
@@ -136,8 +141,8 @@ def make_env_semi_anti_causal(
     u = np.abs(rng_global.normal(0.0, 1.0, size=(dim_y,))).astype(np.float32)
     u = u / np.linalg.norm(u) * np.sqrt(dim_y)
 
-    # 3) Feature causale : X_z ~ N(0, I_dim_z)
-    X_z = rng.normal(0.0, 1.0, size=(n, dim_z)).astype(np.float32)
+    # 3) Feature causale : X_z ~ N(0, causal_strength^2 * I_dim_z)
+    X_z = rng.normal(0.0, causal_strength, size=(n, dim_z)).astype(np.float32)
 
     # 4) Label "propre" : Y* = 1{w_true · X_z > 0}
     Y_star = ((X_z @ w_true) > 0).astype(np.float32).reshape(-1, 1)
@@ -154,7 +159,7 @@ def make_env_semi_anti_causal(
     Z[flips_z] = 1.0 - Z[flips_z]
 
     # 7) Feature spurieuse : X_y = u * Z + bruit
-    X_y = (Z @ u.reshape(1, -1)) + rng.normal(0.0, 1e-3, size=(n, dim_y)).astype(np.float32)
+    X_y = (Z @ u.reshape(1, -1)) + rng.normal(0.0, 1e-1, size=(n, dim_y)).astype(np.float32)
     # Standardisation de X_y pour avoir une variance ~1 (comme X_z)
     X_y = (X_y - X_y.mean(axis=0)) / (X_y.std(axis=0) + 1e-8)
 
@@ -174,6 +179,7 @@ def build_envs_semi_anti_causal(
     n_test: Optional[int] = None,
     dim_z: int = 1,
     dim_y: int = 1,
+    causal_strength: float = 1.0,
 ) -> Tuple[List[Env], List[Env], Env]:
     """
     Construit des environnements semi anti-causaux.
@@ -222,6 +228,7 @@ def build_envs_semi_anti_causal(
             label_flip=label_flip,
             dim_z=dim_z,
             dim_y=dim_y,
+            causal_strength=causal_strength,
         )
 
         (X_tr, y_tr), (X_val, y_val) = _split_numpy(Xc, Y, val_frac, seed + 1000 + i)
@@ -250,6 +257,7 @@ def build_envs_semi_anti_causal(
             label_flip=0.0,
             dim_z=dim_z,
             dim_y=dim_y,
+            causal_strength=causal_strength,
         )
         val_envs.append(Env(torch.from_numpy(Xc_val), torch.from_numpy(Y_val_clean),
                             meta={"p_spur": p_spur, "label_flip": 0.0, "kind": "val", "Z": torch.from_numpy(Z_val), "dim_z": dim_z, "dim_y": dim_y, "w_true": w_true_val, "u": u_val}))
@@ -262,6 +270,7 @@ def build_envs_semi_anti_causal(
         label_flip=0.0,
         dim_z=dim_z,
         dim_y=dim_y,
+        causal_strength=causal_strength,
     )
     meta_test = {
         "p_spur": test_p_spur,
@@ -497,113 +506,88 @@ def make_env_confounding(
     *,
     dim_z: int = 1,
     dim_y: int = 1,
+    include_yz: bool = False,  # Active la 3e colonne X^⊥_{Y,Z}
+    dim_yz: int = 1,           # Dimension de X^⊥_{Y,Z}
+    gamma_yz: float = 0.5,     # Force de l'effet causal de X^⊥_{Y,Z} sur Y
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
-    Génère un environnement confounded avec Z binaire :
+    Génère un environnement confounded avec Z binaire.
 
-      C   ~ Ber(0.35)                      (confondeur)
-      X_z ~ N(0, I_dim_z)                  (feature causale, ⟂ C)
+    Graphe causal (cas de base, include_yz=False) :
+      C   ~ Ber(0.35)              (confondeur latent)
+      Z   = C ⊕ N^e               (proxy spurieux, varie avec l'env)
+      X^⊥_Z ~ N(0, I)             (feature CAUSALE PURE, ⟂ C et Z)
+      X^⊥_Y = u * Z               (feature SPURIEUSE PURE, parent : Z)
+      Y  = sign(w·X^⊥_Z + γ·(2C−1))
+      X  = [X^⊥_Z, X^⊥_Y]
 
-      Z = C ⊕ N^e,   N^e ~ Ber(a), a dans {0.01, 0.1, 0.99}
+    Graphe causal enrichi (include_yz=True) :
+      X^⊥_{Y,Z} = α·Z + β·X^⊥_Z + ε   (MIXTE : parents Z ET X^⊥_Z, agit sur Y)
+      Y  = sign(w·X^⊥_Z + γ·(2C−1) + γ_yz·v·X^⊥_{Y,Z})
+      X  = [X^⊥_Z, X^⊥_Y, X^⊥_{Y,Z}]
 
-      X_y = u * Z                          (feature spurieuse continue)
-
-      Y   = sign( w_true * X_z + gamma * (2C - 1) )
-
-      X   = [X_z, X_y]
+    X^⊥_{Y,Z} est à la fois :
+      - Corrélé avec Z (corr. spurieuse, change entre envs)
+      - Informative sur Y (signal causal via γ_yz)
     """
-    # ✅ FIX CRITIQUE: Seed GLOBALE fixe pour w_true et u
-    # Garantit que le mécanisme causal est IDENTIQUE entre tous les environnements
-    # C'est l'hypothèse fondamentale d'IRM !
     rng_global = _np_rng(42)  # Seed fixe pour les vecteurs causaux
-    rng = _np_rng(seed)       # Seed variable pour le reste (échantillonnage)
+    rng = _np_rng(seed)       # Seed variable pour le reste
 
-    # 1) Vecteur de direction spurieuse u (INVARIANT entre envs)
+    # 1) Vecteur de direction spurieuse u (INVARIANT)
     u = np.abs(rng_global.normal(0.0, 1.0, size=(dim_y,)))
     u = u / np.linalg.norm(u) * np.sqrt(dim_y)
 
-    # 2) Vecteur de poids causaux w_true (INVARIANT entre envs)
+    # 2) Vecteur de poids causaux w_true (INVARIANT)
     w_true = np.abs(rng_global.normal(0.0, 1.0, size=(dim_z,)))
     w_true = w_true / np.linalg.norm(w_true) * np.sqrt(dim_z)
 
-    # 3) Confounder latent C
+    # 3) Vecteur pour X^⊥_{Y,Z} → Y (INVARIANT)
+    v_yz = np.abs(rng_global.normal(0.0, 1.0, size=(dim_yz,)))
+    v_yz = v_yz / np.linalg.norm(v_yz) * np.sqrt(dim_yz)
+
+    # 4) Confounder latent C
     C = rng.binomial(1, 0.35, size=(n, 1)).astype(np.float32)
 
-    # 4) Feature causale X_Z^{⊥}, indépendante de C
+    # 5) Feature causale X^⊥_Z, indépendante de C
     X_z = rng.normal(0.0, 1.0, size=(n, dim_z)).astype(np.float32)
 
-    # 5) Bruit d'environnement N^e ~ Ber(a) et variable intermédiaire Z = C XOR N^e
-    N_e = rng.binomial(1, a, size=(n, 1))  # {0,1}
+    # 6) Proxy spurieux Z = C XOR N^e
+    N_e = rng.binomial(1, a, size=(n, 1))
     Z = np.logical_xor(C.astype(bool), N_e.astype(bool)).astype(np.float32)
 
-    # 6) Feature spurieuse X_Y^{⊥} = u * Z
-    X_y = (Z @ u.reshape(1, -1)).astype(np.float32)
-    # Standardisation de X_y pour avoir une variance ~1 (comme X_z)
-    X_y = (X_y - X_y.mean(axis=0)) / (X_y.std(axis=0) + 1e-8)
-
-    # 7) Label Y = sign( w_true * X_z + gamma * sqrt(dim_z) * (2C - 1) )
-    # ✅ FIX: gamma est multiplié par sqrt(dim_z) pour que le ratio
-    # signal_causal / bruit_confondeur soit constant quelle que soit dim_z.
-    # En effet, X_z @ w_true ~ N(0, dim_z) donc sa std ≈ sqrt(dim_z).
-    # Pour maintenir le même "SNR", on scale gamma par sqrt(dim_z).
-    gamma_scaled = gamma * np.sqrt(dim_z)
-    logit = (X_z @ w_true).reshape(-1, 1) + gamma_scaled * (2.0 * C - 1.0)
-    Y = (logit > 0.0).astype(np.float32)
-
-    # 8) Entrée modèle : X = [X_Z^{⊥}, X_Y^{⊥}]
-    Xc = np.concatenate([X_z, X_y], axis=1).astype(np.float32)
-
-    # On retourne aussi C (confondeur) pour debug/plots, ainsi que w_true et u pour l'alignement
-    return Xc, Y.astype(np.float32), Z.astype(np.float32), C, w_true, u
-
-
-def make_env_confounding_varying_pc(
-    n: int,
-    seed: int,
-    gamma: float = 1.0,
-    p_c: float = 0.35,
-    *,
-    dim_z: int = 1,
-    dim_y: int = 1,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Copie de make_env_confounding acceptant p_c en paramètre.
-    Pour l'expérience où l'on fait varier la loi de C.
-    """
-    rng_global = _np_rng(42)
-    rng = _np_rng(seed)
-
-    # 1) Vecteur de direction spurieuse u
-    u = np.abs(rng_global.normal(0.0, 1.0, size=(dim_y,)))
-    u = u / np.linalg.norm(u) * np.sqrt(dim_y)
-
-    # 2) Vecteur de poids causaux w_true
-    w_true = np.abs(rng_global.normal(0.0, 1.0, size=(dim_z,)))
-    w_true = w_true / np.linalg.norm(w_true) * np.sqrt(dim_z)
-
-    # 3) Confounder latent C avec p_c variable
-    C = rng.binomial(1, p_c, size=(n, 1)).astype(np.float32)
-
-    # 4) Feature causale
-    X_z = rng.normal(0.0, 1.0, size=(n, dim_z)).astype(np.float32)
-
-    Z = C
-
-    # 6) Feature spurieuse
+    # 7) Feature spurieuse PURE X^⊥_Y = u * Z
     X_y = (Z @ u.reshape(1, -1)).astype(np.float32)
     X_y = (X_y - X_y.mean(axis=0)) / (X_y.std(axis=0) + 1e-8)
 
-    # 7) Label Y (C influence le logit avant binarisation)
-    # Ceci crée une vraie corrélation Corr(Y, C) et donc Corr(Y, Z)
+    # 8) Label Y (avec ou sans X^⊥_{Y,Z})
     gamma_scaled = gamma * np.sqrt(dim_z)
     logit = (X_z @ w_true).reshape(-1, 1) + gamma_scaled * (2.0 * C - 1.0)
-    Y = (logit > 0.0).astype(np.float32)
 
-    # 8) Entrée modèle
-    Xc = np.concatenate([X_z, X_y], axis=1).astype(np.float32)
+    if include_yz:
+        # Feature MIXTE X^⊥_{Y,Z} : parents = Z ET X^⊥_Z
+        # alpha contrôle le canal direct Z → X^⊥_{Y,Z}
+        # beta contrôle le canal causal X^⊥_Z → X^⊥_{Y,Z}
+        alpha_yz = 1.0   # force du lien Z    → X^⊥_{Y,Z}
+        beta_yz  = 1.0   # force du lien X^⊥_Z → X^⊥_{Y,Z}
+        eps_yz = rng.normal(0.0, 0.1, size=(n, dim_yz)).astype(np.float32)
+        # Projection de X_z dans la dim_yz dimensions via v_yz
+        X_z_proj = (X_z @ w_true).reshape(-1, 1) * np.ones((1, dim_yz))  # scalaire * dim_yz
+        X_yz = alpha_yz * (Z @ np.ones((1, dim_yz))) + beta_yz * X_z_proj + eps_yz
+        X_yz = (X_yz - X_yz.mean(axis=0)) / (X_yz.std(axis=0) + 1e-8)
+
+        # X^⊥_{Y,Z} contribue causalement à Y via gamma_yz
+        gamma_yz_scaled = gamma_yz * np.sqrt(dim_yz)
+        logit = logit + gamma_yz_scaled * (X_yz @ v_yz).reshape(-1, 1)
+
+        Y = (logit > 0.0).astype(np.float32)
+        # X = [X^⊥_Z, X^⊥_Y, X^⊥_{Y,Z}]
+        Xc = np.concatenate([X_z, X_y, X_yz], axis=1).astype(np.float32)
+    else:
+        Y = (logit > 0.0).astype(np.float32)
+        # X = [X^⊥_Z, X^⊥_Y]
+        Xc = np.concatenate([X_z, X_y], axis=1).astype(np.float32)
 
     return Xc, Y.astype(np.float32), Z.astype(np.float32), C, w_true, u
-
 
 
 def build_envs_confounding(
@@ -617,6 +601,9 @@ def build_envs_confounding(
     *,
     dim_z: int = 1,
     dim_y: int = 1,
+    include_yz: bool = False,
+    dim_yz: int = 1,
+    gamma_yz: float = 0.5,
 ) -> Tuple[List[Env], List[Env], Env]:
     """
     Construit un jeu multi-environnements avec confounder de type CF-CMNIST :
@@ -656,18 +643,14 @@ def build_envs_confounding(
             gamma=gamma,
             dim_z=dim_z,
             dim_y=dim_y,
+            include_yz=include_yz,
+            dim_yz=dim_yz,
+            gamma_yz=gamma_yz,
         )
 
-        # On découpe ce jeu en train / val (val sera régénéré sans flip)
-        # Note: Z n'est pas splitté ici car on ne l'utilise pas pour l'entraînement standard
-        # Mais pour l'analyse, on voudrait le Z correspondant.
-        # Pour faire simple, on va stocker le Z complet dans les meta si besoin, 
-        # ou mieux : on splitte tout.
-        
         (X_tr, y_tr), (X_val_dummy, y_val_dummy) = _split_numpy(
             Xc, Y, val_frac, seed + 1000 + i
         )
-        # On splitte Z de la même façon pour avoir le Z aligné avec X_tr
         (Z_tr, _), (_, _) = _split_numpy(Z, Y, val_frac, seed + 1000 + i)
 
         n_val = y_val_dummy.shape[0]
@@ -680,15 +663,18 @@ def build_envs_confounding(
             "env_id": i,
             "dim_z": dim_z,
             "dim_y": dim_y,
-            "w_true": w_true,  # Pour calcul d'alignement
-            "u": u,            # Pour calcul d'alignement
-            "Z": torch.from_numpy(Z_tr) # Stockage de Z pour analyse
+            "include_yz": include_yz,
+            "dim_yz": dim_yz if include_yz else 0,
+            "gamma_yz": gamma_yz,
+            "w_true": w_true,
+            "u": u,
+            "Z": torch.from_numpy(Z_tr)
         }
         train_envs.append(
             Env(torch.from_numpy(X_tr), torch.from_numpy(y_tr), None, meta_train)
         )
 
-        # ===== VAL env i : même a_e, mais sans confounding supplémentaire ni flip de label =====
+        # ===== VAL env i =====
         X_val, Y_val, Z_val, _C_val, w_true_val, u_val = make_env_confounding(
             n=n_val,
             seed=seed + 5000 + i,
@@ -696,6 +682,9 @@ def build_envs_confounding(
             gamma=gamma,
             dim_z=dim_z,
             dim_y=dim_y,
+            include_yz=include_yz,
+            dim_yz=dim_yz,
+            gamma_yz=gamma_yz,
         )
         meta_val = {
             **meta_train,
@@ -714,6 +703,9 @@ def build_envs_confounding(
         gamma=gamma,
         dim_z=dim_z,
         dim_y=dim_y,
+        include_yz=include_yz,
+        dim_yz=dim_yz,
+        gamma_yz=gamma_yz,
     )
     meta_t = {
         "kind": "confounding",
@@ -723,6 +715,9 @@ def build_envs_confounding(
         "env_id": "test",
         "dim_z": dim_z,
         "dim_y": dim_y,
+        "include_yz": include_yz,
+        "dim_yz": dim_yz if include_yz else 0,
+        "gamma_yz": gamma_yz,
         "w_true": w_true_t,
         "u": u_t,
         "Z": torch.from_numpy(Z_t)
@@ -730,118 +725,6 @@ def build_envs_confounding(
     test_env = Env(torch.from_numpy(Xc_t), torch.from_numpy(Y_t), None, meta_t)
 
     return train_envs, val_envs, test_env
-
-
-def build_envs_confounding_varying_pc(
-    n: int,
-    train_p_cs: List[float],     # Liste des p(C) pour les envs de TRAIN
-    test_p_c: float,             # p(C) pour l'env de TEST OOD
-    a: float,                    # a (bruit C->Z) fixé pour tous les envs
-    gamma: float = 1.0,
-    seed: int = 1,
-    val_frac: float = 0.2,
-    n_test: Optional[int] = None,
-    *,
-    dim_z: int = 1,
-    dim_y: int = 1,
-) -> Tuple[List[Env], List[Env], Env]:
-    """
-    Construit un jeu multi-environnements avec confounder où la LOI DE C (p_c) VARIE.
-    
-    C ~ Ber(p_c^e)
-    Lien C -> Z est stable ou légèrement bruité (paramétré par 'a' qui est FIXE).
-    
-    Args:
-        train_p_cs: Liste des probabilités P(C=1) pour chaque env de train.
-        test_p_c: P(C=1) pour l'env de test.
-        a: Paramètre de bruit N^e ~ Ber(a) dans Z = C XOR N^e.
-           Si a est petit (ex: 0.05), Z est un très bon proxy de C stablement.
-    """
-    if n_test is None:
-        n_test = n
-
-    train_envs, val_envs = [], []
-
-    for i, pc_e in enumerate(train_p_cs):
-        # ===== TRAIN env i =====
-        Xc, Y, Z, _C, w_true, u = make_env_confounding_varying_pc(
-            n=n,
-            seed=seed + i,
-            gamma=gamma,
-            p_c=pc_e,      # VARIABLE
-            dim_z=dim_z,
-            dim_y=dim_y,
-        )
-
-        (X_tr, y_tr), (X_val_dummy, y_val_dummy) = _split_numpy(
-            Xc, Y, val_frac, seed + 1000 + i
-        )
-        (Z_tr, _), (_, _) = _split_numpy(Z, Y, val_frac, seed + 1000 + i)
-        
-        n_val = y_val_dummy.shape[0]
-
-        meta_train = {
-            "kind": "confounding_var_pc",
-            "p_c": float(pc_e),
-            "a": float(a),
-            "gamma": float(gamma),
-            "split": "train",
-            "env_id": i,
-            "dim_z": dim_z,
-            "dim_y": dim_y,
-            "w_true": w_true,
-            "u": u,
-            "Z": torch.from_numpy(Z_tr)
-        }
-        train_envs.append(
-            Env(torch.from_numpy(X_tr), torch.from_numpy(y_tr), None, meta_train)
-        )
-
-        # ===== VAL env i =====
-        # On régénère avec le MEME p_c pour valider dans la même distribution
-        X_val, Y_val, Z_val, _C_val, w_true_val, u_val = make_env_confounding_varying_pc(
-            n=n_val,
-            seed=seed + 5000 + i,
-            gamma=gamma,
-            p_c=pc_e,
-            dim_z=dim_z,
-            dim_y=dim_y,
-        )
-        meta_val = {
-            **meta_train,
-            "split": "val",
-            "Z": torch.from_numpy(Z_val)
-        }
-        val_envs.append(
-            Env(torch.from_numpy(X_val), torch.from_numpy(Y_val), None, meta_val)
-        )
-
-    # ===== TEST OOD =====
-    Xc_t, Y_t, Z_t, _C_t, w_true_t, u_t = make_env_confounding_varying_pc(
-        n=n_test,
-        seed=seed + 777,
-        gamma=gamma,
-        p_c=test_p_c, # VARIABLE (OOD)
-        dim_z=dim_z,
-        dim_y=dim_y,
-    )
-    meta_t = {
-        "kind": "confounding_var_pc",
-        "p_c": float(test_p_c),
-        "a": float(a),
-        "gamma": float(gamma),
-        "split": "test_ood",
-        "env_id": "test",
-        "dim_z": dim_z,
-        "dim_y": dim_y,
-        "w_true": w_true_t,
-        "u": u_t,
-        "Z": torch.from_numpy(Z_t)
-    }
-    test_env = Env(torch.from_numpy(Xc_t), torch.from_numpy(Y_t), None, meta_t)
-
-    return train_envs, val_envs, test_env
-
 
 
 # =============================================================================
@@ -856,107 +739,113 @@ def make_env_selection(
     keep_if_one: bool = True,
     dim_z: int = 1,
     dim_y: int = 1,
+    include_yz: bool = False,  # Active la 3e colonne X^⊥_{Y,Z}
+    dim_yz: int = 1,           # Dimension de X^⊥_{Y,Z}
+    gamma_yz: float = 0.5,     # Force de l'effet causal de X^⊥_{Y,Z} sur Y
 ) -> Tuple[np.ndarray, np.ndarray, float]:
     """
-    Biais de sélection à la CS-CMNIST.
+    Biais de sélection.
 
-    Population de base (commune à tous les envs)
-    -------------------------------------------
-      Z              ~ Bernoulli(1/2)                 (variable de contexte)
-      X_Z^{⊥}        ~ N(0, I_dim_z)
-      Y*             = sign( w_true * X_Z^{⊥} )      (latent ∈ {-1,+1})
-      Y              = 1{ Y* > 0 } ∈ {0,1}
-      (optionnel)    flip(Y) avec prob label_flip
-      X_Y^{⊥}        = u * Z
+    Graphe causal (cas de base, include_yz=False) :
+      Z              ~ Bernoulli(1/2)           (variable de contexte spurieuse)
+      X^⊥_Z          ~ N(0, I_dim_z)           (feature CAUSALE PURE)
+      Y*             = sign(w·X^⊥_Z)           (latent)
+      Y              = 1{Y*>0}                 (avec flip optionnel)
+      X^⊥_Y          = u * Z                   (feature SPURIEUSE PURE)
+      Sélection : P(garder) = alpha si Z==Y, 1-alpha sinon
+      X = [X^⊥_Z, X^⊥_Y]
 
-    Biais de sélection (spécifique à l'env e)
-    ----------------------------------------
-      On garde un point avec probabilité :
-         - alpha        si Z == Y (créer corrélation spurieuse)
-         - 1 - alpha    si Z ≠ Y
-      
-      Exemple:
-         - alpha = 0.9 → garde 90% des Z==Y, 10% des Z≠Y → forte corrélation
-         - alpha = 0.5 → garde 50% partout → pas de biais
-         - alpha = 0.1 → garde 10% des Z==Y, 90% des Z≠Y → corrélation inversée (OOD)
+    Graphe enrichi (include_yz=True) :
+      X^⊥_{Y,Z} = α·Z + β·X^⊥_Z + ε          (MIXTE : parents Z ET X^⊥_Z)
+      Y* = sign(w·X^⊥_Z + gamma_yz·v·X^⊥_{Y,Z})  (agit sur Y)
+      X = [X^⊥_Z, X^⊥_Y, X^⊥_{Y,Z}]
 
-      On garde les points sélectionnés (S = 1 si keep_if_one=True).
-
-    Renvoie
-    -------
-    Xc : ndarray (n, dim_z + dim_y)
-    Y  : ndarray (n, 1)  labels {0,1}
-    sel_rate : proportion retenue avant tronquage à n
+    Paramètres
+    ----------
+    alpha : float
+        alpha = 0.9 → forte corrélation Z==Y (train)
+        alpha = 0.5 → pas de biais
+        alpha = 0.1 → corrélation inversée (OOD)
     """
-    # ✅ FIX CRITIQUE: Seed GLOBALE fixe pour w_true et u
-    # Garantit que la fonction causale est IDENTIQUE entre tous les environnements
-    rng_global = _np_rng(42)  # Seed fixe pour les vecteurs causaux
-    rng = _np_rng(seed)       # Seed variable pour le reste (échantillonnage)
+    rng_global = _np_rng(42)
+    rng = _np_rng(seed)
 
-    # 1) Vecteur de poids causaux (INVARIANT entre envs)
+    # 1) Vecteur de poids causaux (INVARIANT)
     w_true = np.abs(rng_global.normal(0.0, 1.0, size=(dim_z,)))
     w_true = w_true / np.linalg.norm(w_true) * np.sqrt(dim_z)
-    
-    # 2) Direction spurieuse (INVARIANTE entre envs)
+
+    # 2) Direction spurieuse (INVARIANTE)
     u = np.abs(rng_global.normal(0.0, 1.0, size=(dim_y,)))
     u = u / np.linalg.norm(u) * np.sqrt(dim_y)
 
-    kept_Xz, kept_Xy, kept_Y, kept_Z = [], [], [], []
+    # 3) Vecteur pour X^⊥_{Y,Z} → Y (INVARIANT)
+    v_yz = np.abs(rng_global.normal(0.0, 1.0, size=(dim_yz,)))
+    v_yz = v_yz / np.linalg.norm(v_yz) * np.sqrt(dim_yz)
+
+    kept_Xz, kept_Xy, kept_Xyz, kept_Y, kept_Z = [], [], [], [], []
     kept, total = 0, 0
 
     while kept < n:
         B = max(2048, n - kept)
 
         # --- Population de base ---
-        Z = rng.binomial(1, 0.5, size=(B, 1)).astype(np.float32)  # contexte binaire
+        Z = rng.binomial(1, 0.5, size=(B, 1)).astype(np.float32)
+        Xz = rng.normal(0, 1.0, size=(B, dim_z)).astype(np.float32)  # X^⊥_Z (causal)
+        Xy = Z @ u.reshape(1, -1)                                      # X^⊥_Y (spurieux)
 
-        Xz = rng.normal(0, 1.0, size=(B, dim_z)).astype(np.float32)  # X_Z^{⊥}
+        if include_yz:
+            # X^⊥_{Y,Z} : parents Z ET X^⊥_Z
+            alpha_yz = 1.0
+            beta_yz  = 1.0
+            eps_yz = rng.normal(0.0, 0.1, size=(B, dim_yz)).astype(np.float32)
+            Xz_proj = (Xz @ w_true).reshape(-1, 1) * np.ones((1, dim_yz))
+            Xyz = alpha_yz * (Z @ np.ones((1, dim_yz))) + beta_yz * Xz_proj + eps_yz
 
-        # Utiliser w_true (déjà généré ci-dessus)
-        Y = ((Xz @ w_true).reshape(-1, 1) > 0.0).astype(np.float32)  # ∈ {0,1}
+            # Y dépend de X^⊥_Z ET de X^⊥_{Y,Z}
+            gamma_yz_scaled = gamma_yz * np.sqrt(dim_yz)
+            logit = (Xz @ w_true).reshape(-1, 1) + gamma_yz_scaled * (Xyz @ v_yz).reshape(-1, 1)
+        else:
+            logit = (Xz @ w_true).reshape(-1, 1)
+            Xyz = None
 
-        # Flip symétrique des labels (si demandé)
+        Y = (logit > 0.0).astype(np.float32)
+
         if label_flip and label_flip > 0.0:
             flips = rng.uniform(size=Y.shape) < label_flip
             Y[flips] = 1.0 - Y[flips]
 
-        # Utiliser u (déjà généré ci-dessus)
-        Xy = Z @ u.reshape(1, -1)
-
         # --- Sélection basée sur Z==Y ---
-        # "same" <=> Z == Y
         same = (Z == Y).astype(np.float32)
-        
-        # alpha = probabilité de garder si Z==Y
-        # 1-alpha = probabilité de garder si Z≠Y
         prob_keep_if_same = float(alpha)
         prob_keep_if_diff = 1.0 - prob_keep_if_same
-        
         S_p = np.where(same == 1.0, prob_keep_if_same, prob_keep_if_diff)
-        
         S_samples = (rng.uniform(size=S_p.shape) < S_p).astype(np.float32)
-
         mask = (S_samples == (1.0 if keep_if_one else 0.0)).flatten()
 
         kept_Xz.append(Xz[mask])
         kept_Xy.append(Xy[mask])
         kept_Y.append(Y[mask])
-        kept_Z.append(Z[mask])  # Garder Z aussi
+        kept_Z.append(Z[mask])
+        if include_yz:
+            kept_Xyz.append(Xyz[mask])
 
         kept += mask.sum()
         total += B
 
-    Xz_k = np.concatenate(kept_Xz, axis=0)[:n]
-    Xy_k = np.concatenate(kept_Xy, axis=0)[:n]
-    
-    # Standardisation de X_y pour avoir une variance ~1 (comme X_z)
-    Xy_k = (Xy_k - Xy_k.mean(axis=0)) / (Xy_k.std(axis=0) + 1e-8)
-    Y_k  = np.concatenate(kept_Y,  axis=0)[:n]
-    Z_k  = np.concatenate(kept_Z,  axis=0)[:n]
+    Xz_k  = np.concatenate(kept_Xz, axis=0)[:n]
+    Xy_k  = np.concatenate(kept_Xy, axis=0)[:n]
+    Xy_k  = (Xy_k - Xy_k.mean(axis=0)) / (Xy_k.std(axis=0) + 1e-8)
+    Y_k   = np.concatenate(kept_Y,  axis=0)[:n]
+    Z_k   = np.concatenate(kept_Z,  axis=0)[:n]
 
-    Xc = np.concatenate([Xz_k, Xy_k], axis=1).astype(np.float32)
+    if include_yz:
+        Xyz_k = np.concatenate(kept_Xyz, axis=0)[:n]
+        Xyz_k = (Xyz_k - Xyz_k.mean(axis=0)) / (Xyz_k.std(axis=0) + 1e-8)
+        Xc = np.concatenate([Xz_k, Xy_k, Xyz_k], axis=1).astype(np.float32)
+    else:
+        Xc = np.concatenate([Xz_k, Xy_k], axis=1).astype(np.float32)
+
     sel_rate = kept / total if total > 0 else 0.0
-
     return Xc, Y_k.astype(np.float32), sel_rate, w_true, u
 
 
@@ -970,6 +859,9 @@ def build_envs_selection(
     label_flip: float = 0.25,
     dim_z: int = 1,
     dim_y: int = 1,
+    include_yz: bool = False,
+    dim_yz: int = 1,
+    gamma_yz: float = 0.5,
 ) -> Tuple[List[Env], List[Env], Env]:
 
     if n_test is None:
@@ -986,6 +878,9 @@ def build_envs_selection(
             label_flip=label_flip,
             dim_z=dim_z,
             dim_y=dim_y,
+            include_yz=include_yz,
+            dim_yz=dim_yz,
+            gamma_yz=gamma_yz,
         )
         (X_tr, y_tr), (X_val, y_val) = _split_numpy(Xc, Y, val_frac, seed + 1000 + i)
 
@@ -997,6 +892,9 @@ def build_envs_selection(
             "split": "train",
             "dim_z": dim_z,
             "dim_y": dim_y,
+            "include_yz": include_yz,
+            "dim_yz": dim_yz if include_yz else 0,
+            "gamma_yz": gamma_yz,
             "w_true": w_true,
             "u": u,
         }
@@ -1010,6 +908,9 @@ def build_envs_selection(
             label_flip=0.0,
             dim_z=dim_z,
             dim_y=dim_y,
+            include_yz=include_yz,
+            dim_yz=dim_yz,
+            gamma_yz=gamma_yz,
         )
         meta_val = {
             "kind": "selection",
@@ -1019,6 +920,9 @@ def build_envs_selection(
             "split": "val",
             "dim_z": dim_z,
             "dim_y": dim_y,
+            "include_yz": include_yz,
+            "dim_yz": dim_yz if include_yz else 0,
+            "gamma_yz": gamma_yz,
             "w_true": w_true_val,
             "u": u_val,
         }
@@ -1032,7 +936,10 @@ def build_envs_selection(
         label_flip=0.0,
         dim_z=dim_z,
         dim_y=dim_y,
-        )
+        include_yz=include_yz,
+        dim_yz=dim_yz,
+        gamma_yz=gamma_yz,
+    )
     meta_t = {
         "kind": "selection",
         "psi": float(test_alpha),
@@ -1041,9 +948,270 @@ def build_envs_selection(
         "split": "test_ood",
         "dim_z": dim_z,
         "dim_y": dim_y,
+        "include_yz": include_yz,
+        "dim_yz": dim_yz if include_yz else 0,
+        "gamma_yz": gamma_yz,
         "w_true": w_true_t,
         "u": u_t,
     }
     test_env = Env(torch.from_numpy(Xc_t), torch.from_numpy(Y_t), None, meta_t)
 
+    return train_envs, val_envs, test_env
+
+
+def make_env_confounding_varying_gamma(
+    n: int,
+    seed: int,
+    gamma: float,         # Coefficient d'influence de C sur Y (varie avec l'env)
+    *,
+    dim_z: int = 1,
+    dim_y: int = 1,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Génère un environnement où l'influence du confondeur C sur Y varie (gamma).
+    
+    C ~ N(0, 1) (Confondeur continu Gaussian)
+    Z = 1{C > 0} (Proxy binarisé)
+    
+    X_z ~ N(0, I)
+    X_y = u * Z + noise
+    
+    Y = sign( w*X_z + gamma*C )
+    """
+    rng_global = _np_rng(42)
+    rng = _np_rng(seed)
+
+    # 1) Vecteurs invariants
+    u = np.abs(rng_global.normal(0.0, 1.0, size=(dim_y,)))
+    u = u / np.linalg.norm(u) * np.sqrt(dim_y)
+
+    w_true = np.abs(rng_global.normal(0.0, 1.0, size=(dim_z,)))
+    w_true = w_true / np.linalg.norm(w_true) * np.sqrt(dim_z)
+
+    # 2) Confounder C (Continu Gaussien)
+    C = rng.normal(0.0, 1.0, size=(n, 1)).astype(np.float32)
+
+    # 3) Z est la version binarisée de C
+    Z = (C > 0).astype(np.float32)
+
+    # 4) Feature causale X_z
+    X_z = rng.normal(0.0, 1.0, size=(n, dim_z)).astype(np.float32)
+    
+    # 5) Feature spurieuse X_y
+    # X_y dépend de Z (donc du signe de C). 
+    X_y = (Z @ u.reshape(1, -1)).astype(np.float32)
+    # Bruit sur X_y
+    X_y += rng.normal(0.0, 0.1, size=(n, dim_y)).astype(np.float32)
+    # Standardisation
+    X_y = (X_y - X_y.mean(axis=0)) / (X_y.std(axis=0) + 1e-8)
+
+    # 6) Label Y
+    # Y dépend de X_z (causal) et de C (spurious continu) avec poids gamma
+    # On scale gamma par sqrt(dim_z) pour garder le ratio SNR constant vs dimension
+    gamma_scaled = gamma * np.sqrt(dim_z)
+    
+    # C est N(0,1), donc pas besoin de (2C-1)
+    logit = (X_z @ w_true).reshape(-1, 1) + gamma_scaled * C
+    Y = (logit > 0.0).astype(np.float32)
+
+    # 7) Features
+    Xc = np.concatenate([X_z, X_y], axis=1).astype(np.float32)
+
+    return Xc, Y, Z, C, w_true, u
+
+
+def build_envs_confounding_varying_gamma(
+    n: int,
+    train_gammas: List[float],
+    test_gamma: float,
+    seed: int,
+    val_frac: float = 0.2,
+    n_test: Optional[int] = None,
+    dim_z: int = 1,
+    dim_y: int = 1,
+) -> Tuple[List[Env], List[Env], Env]:
+    
+    if n_test is None:
+        n_test = n
+        
+    train_envs, val_envs = [], []
+    
+    # --- TRAIN ---
+    for i, g in enumerate(train_gammas):
+        Xc, Y, Z, C, w_true, u = make_env_confounding_varying_gamma(
+            n=n, seed=seed+i, gamma=g, dim_z=dim_z, dim_y=dim_y
+        )
+        
+        (X_tr, y_tr), (X_val_dummy, y_val_dummy) = _split_numpy(Xc, Y, val_frac, seed+1000+i)
+        (Z_tr, _), (_, _) = _split_numpy(Z, Y, val_frac, seed+1000+i)
+        
+        meta = {
+            "kind": "conf_vary_gamma",
+            "gamma": g,
+            "env_id": i,
+            "dim_z": dim_z,
+            "dim_y": dim_y,
+            "Z": torch.from_numpy(Z_tr),
+            "w_true": w_true, "u": u
+        }
+        train_envs.append(Env(torch.from_numpy(X_tr), torch.from_numpy(y_tr), meta=meta))
+        
+        # Validation
+        Xc_v, Y_v, Z_v, _, _, _ = make_env_confounding_varying_gamma(
+            n=len(y_val_dummy), seed=seed+5000+i, gamma=g, dim_z=dim_z, dim_y=dim_y
+        )
+        meta_val = meta.copy(); meta_val["split"] = "val"; meta_val["Z"] = torch.from_numpy(Z_v)
+        val_envs.append(Env(torch.from_numpy(Xc_v), torch.from_numpy(Y_v), meta=meta_val))
+        
+    # --- TEST ---
+    Xc_t, Y_t, Z_t, C_t, w_true_t, u_t = make_env_confounding_varying_gamma(
+        n=n_test, seed=seed+999, gamma=test_gamma, dim_z=dim_z, dim_y=dim_y
+    )
+    meta_test = {
+        "kind": "conf_vary_gamma",
+        "gamma": test_gamma,
+        "env_id": "test",
+        "dim_z": dim_z, "dim_y": dim_y,
+        "Z": torch.from_numpy(Z_t),
+        "w_true": w_true_t, "u": u_t
+    }
+    test_env = Env(torch.from_numpy(Xc_t), torch.from_numpy(Y_t), meta=meta_test)
+    
+    return train_envs, val_envs, test_env
+
+
+# Wrapper pour compatibilité
+def make_env_semi_anti_causal(
+    n: int,
+    p_spur: float,
+    seed: int,
+    label_flip: float = 0.25,
+    dim_z: int = 1,
+    dim_y: int = 1,
+    causal_strength: float = 1.0
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Wrapper pour génération semi anti-causale (retourne aussi w_true et u)."""
+    return _generate_semi_anti_causal(n, p_spur, seed, label_flip, dim_z, dim_y, causal_strength)
+
+
+
+def make_custom_causal_confounding(
+    n: int,
+    a: float,              # Probabilité de flip (1 - p_e) entre U et Z
+    alpha: float = 1.0,    # Poids du confondeur U sur le label Y
+    sigma_x: float = 0.1,  # Bruit sur la feature spurieuse (X_y)
+    sigma_y: float = 0.1,  # Bruit sur le logit du label (Y)
+    seed: int = 42,
+    dim_z: int = 1,        # Dimension causale (fixée à 1 pour l'instant dans ce modèle simplifié)
+    dim_y: int = 1         # Dimension spurieuse (fixée à 1 pour l'instant)
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    
+    rng = _np_rng(seed)
+    
+    # 1. Le Confondeur U ~ Bernoulli(0.5) [Source de corrélation fallacieuse]
+    U = rng.binomial(1, 0.5, size=(n, 1)).astype(np.float32)
+    
+    # 2. Feature Causale X_z ~ N(0, 1) [Signal stable]
+    X_z = rng.normal(0, 1, size=(n, dim_z)).astype(np.float32)
+    
+    # Poids causaux (Ici on simplifie : w_true = 1.0 si dim_z=1, sinon vecteur unitaire)
+    if dim_z == 1:
+        w_true = np.array([[1.0]], dtype=np.float32)
+    else:
+        rng_global = _np_rng(42) # Seed fixe pour w_true
+        w_true = rng_global.normal(0, 1, size=(dim_z, 1)).astype(np.float32)
+        w_true /= np.linalg.norm(w_true)
+
+    # 3. Label Y binaire (Classification)
+    # Y = sign(X_z * w + alpha * (2U - 1) + epsilon)
+    epsilon_y = rng.normal(0, sigma_y, size=(n, 1)).astype(np.float32)
+    
+    # Terme causal
+    causal_term = X_z @ w_true
+    
+    # Terme confondeur (2U - 1 pour avoir {-1, 1})
+    # alpha contrôle l'intensité de l'incitation pour le modèle
+    confounder_term = alpha * (2.0 * U - 1.0)
+    
+    logit = causal_term + confounder_term + epsilon_y
+    Y = (logit > 0).astype(np.float32)
+    
+    # 4. Attribut parasite Z (Style spurieux, proxy de U)
+    # On crée Z en fonction de U avec un taux d'erreur 'a' (flip)
+    # Z = U XOR Bernoulli(a)
+    flip_mask = rng.binomial(1, a, size=(n, 1)).astype(bool)
+    Z = U.copy()
+    Z[flip_mask] = 1.0 - Z[flip_mask]
+    
+    # 5. Feature non-causale X_y = Z + epsilon_x [Raccourci pour le modèle]
+    epsilon_x = rng.normal(0, sigma_x, size=(n, dim_y)).astype(np.float32)
+    
+    # Si dim_y > 1, on projette Z sur dim_y dimensions (simple répétition + bruit)
+    if dim_y > 1:
+        X_y = np.tile(Z, (1, dim_y)) + epsilon_x
+    else:
+        X_y = Z + epsilon_x
+    
+    # Concaténation des features [Causale (dim_z), Spureuse (dim_y)]
+    Xc = np.concatenate([X_z, X_y], axis=1).astype(np.float32)
+    
+    w_true_flat = w_true.flatten()
+    u_vector = np.ones(dim_y, dtype=np.float32) # U est scalaire ici, projeté implicitement
+
+    return Xc, Y, w_true_flat, u_vector
+
+
+def build_custom_experiment(
+    n: int = 5000, 
+    seed: int = 0,
+    train_a: List[float] = [0.05, 0.15], # Taux d'erreur U -> Z (corrélation forte)
+    test_a: float = 0.90,                # Taux d'erreur inversé (corrélation inversée)
+    alpha: float = 0.20,                 # Taux de flip U -> Y (1.0 = bruit total, 0.0 = pas d'effet)
+    val_frac: float = 0.2,
+    dim_z: int = 1,
+    dim_y: int = 1
+) -> Tuple[List[Env], List[Env], Env]:
+    
+    train_envs = []
+    val_envs = []
+    
+    # --- TRAIN ENVS ---
+    for i, a in enumerate(train_a):
+        Xc, Y, w_true, u = make_custom_causal_confounding(n, a=a, alpha=alpha, seed=seed+i, dim_z=dim_z, dim_y=dim_y)
+        
+        # Split Train/Val
+        (X_tr, y_tr), (X_val_dummy, y_val_dummy) = _split_numpy(Xc, Y, val_frac, seed + 1000 + i)
+        
+        meta = {
+            "kind": "custom_confounding",
+            "a": a,
+            "env_id": i,
+            "dim_z": dim_z,
+            "dim_y": dim_y,
+            "w_true": w_true,
+            "u": u
+        }
+        train_envs.append(Env(torch.from_numpy(X_tr), torch.from_numpy(y_tr), meta=meta))
+        
+        # Validation Env (Regénéré pour être propre)
+        Xc_v, Y_v, _, _ = make_custom_causal_confounding(len(y_val_dummy), a=a, alpha=alpha, seed=seed+5000+i, dim_z=dim_z, dim_y=dim_y)
+        meta_val = meta.copy(); meta_val["split"] = "val"
+        val_envs.append(Env(torch.from_numpy(Xc_v), torch.from_numpy(Y_v), meta=meta_val))
+
+    # --- TEST OOD ---
+    Xc_t, Y_t, w_true_t, u_t = make_custom_causal_confounding(n, a=test_a, alpha=alpha, seed=seed+999, dim_z=dim_z, dim_y=dim_y)
+    
+    meta_test = {
+        "kind": "custom_confounding",
+        "a": test_a,
+        "alpha": alpha,
+        "env_id": "test",
+        "dim_z": dim_z,
+        "dim_y": dim_y,
+        "w_true": w_true_t,
+        "u": u_t
+    }
+    
+    test_env = Env(torch.from_numpy(Xc_t), torch.from_numpy(Y_t), meta=meta_test)
+    
     return train_envs, val_envs, test_env

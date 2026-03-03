@@ -1,0 +1,21 @@
+
+================================================================================
+Environment          | Euc Dist     | Cos Sim      | Samples   
+================================================================================
+Train_Env_0          | 4.0148       | 0.8438       | 225       
+Train_Env_1          | 4.1847       | 0.8291       | 225       
+Test_OOD             | 4.0816       | 0.8418       | 306       
+================================================================================
+
+Plots saved to directory: /home/p.grunenwald/Synthetique_DAGs/Classif_experimentale/embedding_plots
+
+================================================================================
+MECHANISM VALIDATION: Comparing Separation Directions (Spam - Ham)
+================================================================================
+Average Train Separation Vector (Spam - Ham)
+Test OOD Separation Vector (Spam - Ham)
+Alignment (Cosine Similarity): -0.7146
+
+⚠️ RESULT: Separation vectors are orthogonal or mixed.
+
+Report saved to: /home/p.grunenwald/Synthetique_DAGs/Classif_experimentale/embedding_analysis_report.txt
