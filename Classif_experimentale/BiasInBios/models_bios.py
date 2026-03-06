@@ -21,7 +21,9 @@ from torch.utils.data import DataLoader, TensorDataset
 from data_bios import Env, N_CLASSES
 from utils_bios import (
     evaluate_multiclass,
+    evaluate_f1_macro,
     evaluate_group,
+    evaluate_group_f1,
     evaluate_by_gender,
     evaluate_and_log_step,
     resolve_device,
@@ -92,7 +94,9 @@ def _init_history() -> Dict:
         "train_acc": [],
         "val_acc": [],
         "test_acc": [],
-        "gender_gap": [],  # |acc_F - acc_M| sur le test OOD
+        "test_f1": [],
+        "gender_gap": [],      # |acc_F - acc_M| sur le test OOD
+        "gender_gap_f1": [],   # |f1_F - f1_M| sur le test OOD
     }
 
 
@@ -171,14 +175,17 @@ def train_erm(
             tr_acc = evaluate_group(model, envs, str(dev))
             va_acc = evaluate_group(model, val_envs, str(dev))
             te_acc = evaluate_multiclass(model, test_env, str(dev))
-            gg = evaluate_by_gender(model, test_env, str(dev))["gap"]
+            te_f1  = evaluate_f1_macro(model, test_env, str(dev))
+            gg = evaluate_by_gender(model, test_env, str(dev))
 
             history["step"].append(t + 1)
             history["loss"].append(loss.item())
             history["train_acc"].append(tr_acc)
             history["val_acc"].append(va_acc)
             history["test_acc"].append(te_acc)
-            history["gender_gap"].append(gg)
+            history["test_f1"].append(te_f1)
+            history["gender_gap"].append(gg["gap_acc"])
+            history["gender_gap_f1"].append(gg["gap_f1"])
 
             evaluate_and_log_step("ERM", t + 1, model, envs, val_envs, test_env,
                                   str(dev), loss_val=loss.item())
@@ -269,14 +276,17 @@ def train_irm(
             tr_acc = evaluate_group(phi, envs, str(dev))
             va_acc = evaluate_group(phi, val_envs, str(dev))
             te_acc = evaluate_multiclass(phi, test_env, str(dev))
-            gg = evaluate_by_gender(phi, test_env, str(dev))["gap"]
+            te_f1  = evaluate_f1_macro(phi, test_env, str(dev))
+            gg = evaluate_by_gender(phi, test_env, str(dev))
 
             history["step"].append(t + 1)
             history["loss"].append(emp_risk.item())
             history["train_acc"].append(tr_acc)
             history["val_acc"].append(va_acc)
             history["test_acc"].append(te_acc)
-            history["gender_gap"].append(gg)
+            history["test_f1"].append(te_f1)
+            history["gender_gap"].append(gg["gap_acc"])
+            history["gender_gap_f1"].append(gg["gap_f1"])
 
             evaluate_and_log_step("IRM", t + 1, phi, envs, val_envs, test_env,
                                   str(dev), loss_val=emp_risk.item())
