@@ -10,3 +10,7 @@ venv/
 .embed_cache/
 *.csv
 *.png
+**/plots/
+**/logs/
+**/cache/
+data/
