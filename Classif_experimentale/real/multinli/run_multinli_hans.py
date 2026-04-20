@@ -423,11 +423,13 @@ def finetune_erm(
     loss_fn = nn.CrossEntropyLoss()
     use_autocast = "cuda" in str(device)
     history = []
+    log_steps = 100  # Log loss tous les 50 steps
 
     print(f"\n  Fine-tuning ERM — {epochs} epochs, {total_steps:,} steps total")
     print(f"  lr_bert={lr_bert}, lr_head={lr_head}")
 
     global_step = 0
+    step_loss = 0.0
     for epoch in range(epochs):
         model.train()
         total_loss, correct, total = 0.0, 0, 0
@@ -467,12 +469,18 @@ def finetune_erm(
             scheduler.step()
 
             total_loss  += batch_loss.item()
+            step_loss = batch_loss.item()
             total       += n_samples
             global_step += 1
 
+            # Log loss fréquemment
+            if global_step % log_steps == 0:
+                avg_loss = total_loss / (global_step - epoch * steps_per_epoch)
+                print(f"    [ERM] step {global_step:,}/{total_steps:,}  loss={step_loss:.4f} (avg: {avg_loss:.4f})")
+
             if eval_every_steps and global_step % eval_every_steps == 0:
                 res = evaluate_all(model, eval_loaders, hans_loader, device)
-                history.append({"step": global_step, "epoch": epoch + 1, **res})
+                history.append({"step": global_step, "epoch": epoch + 1, "loss": step_loss, **res})
                 step_in_epoch = global_step - epoch * steps_per_epoch
                 print(f"    [ERM] step {global_step:,}  "
                       f"loss={total_loss/max(1, step_in_epoch):.4f}  "
@@ -528,6 +536,7 @@ def finetune_irm(
     loss_fn = nn.CrossEntropyLoss()
     use_autocast = "cuda" in str(device)
     history = []
+    log_steps = 100  # Log loss tous les 100 steps
     E = len(env_loaders)
 
     print(f"\n  Fine-tuning IRM — {epochs} epochs, {total_steps:,} steps total")
@@ -535,6 +544,7 @@ def finetune_irm(
     print(f"  warmup: {warmup_steps:,} steps ({warmup_fraction*100:.0f}%)")
 
     global_step = 0
+    step_loss = 0.0
     for epoch in range(epochs):
         model.train()
         total_loss, total_penalty = 0.0, 0.0
@@ -590,13 +600,20 @@ def finetune_irm(
 
             total_loss    += emp_risk.item()
             total_penalty += penalty.item()
+            step_loss = emp_risk.item()
             global_step   += 1
+
+            # Log loss fréquemment
+            if global_step % log_steps == 0:
+                avg_loss = total_loss / (global_step - epoch * steps_per_epoch)
+                avg_penalty = total_penalty / (global_step - epoch * steps_per_epoch)
+                print(f"    [IRM] step {global_step:,}/{total_steps:,}  loss={step_loss:.4f} (avg: {avg_loss:.4f})  pen={avg_penalty:.4f}  λ={lambda_t:.1f}")
 
             if eval_every_steps and global_step % eval_every_steps == 0:
                 res = evaluate_all(model, eval_loaders, hans_loader, device)
                 step_in_epoch = global_step - epoch * steps_per_epoch
                 history.append({"step": global_step, "epoch": epoch + 1,
-                                 "penalty": total_penalty / max(1, step_in_epoch), **res})
+                                 "loss": step_loss, "penalty": total_penalty / max(1, step_in_epoch), **res})
                 print(f"    [IRM] step {global_step:,}  "
                       f"loss={total_loss/max(1, step_in_epoch):.4f}  "
                       f"pen={total_penalty/max(1, step_in_epoch):.4f}  "
@@ -699,8 +716,33 @@ def plot_per_genre(results_erm: dict, results_irm: dict, out_dir: str):
     print(f"  Per-genre plot sauvegardé dans {out_dir}/hans_per_genre.png")
 
 
-def plot_training_history(hist_erm: list, hist_irm: list, out_dir: str):
-    """Courbes d'accuracy pendant le fine-tuning."""
+def plot_loss_curves(hist_erm: list, hist_irm: list, out_dir: str):
+    """Traces de la perte pendant le fine-tuning (ERM vs IRM)."""
+    if not hist_erm or not hist_irm:
+        return
+
+    fig, ax = plt.subplots(figsize=(12, 5))
+
+    steps_erm = [h["step"] for h in hist_erm if "loss" in h]
+    loss_erm  = [h["loss"] for h in hist_erm if "loss" in h]
+    steps_irm = [h["step"] for h in hist_irm if "loss" in h]
+    loss_irm  = [h["loss"] for h in hist_irm if "loss" in h]
+
+    ax.plot(steps_erm, loss_erm, label="ERM FT", alpha=0.85, linewidth=2, color="#e74c3c")
+    ax.plot(steps_irm, loss_irm, label="IRM FT", alpha=0.85, linewidth=2, color="#2ecc71")
+
+    ax.set_xlabel("Training Step")
+    ax.set_ylabel("Loss (Cross-Entropy)")
+    ax.set_title("Training Loss — ERM vs IRM FT (BERT on MNLI)")
+    ax.legend(fontsize=11)
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(os.path.join(out_dir, "loss_curves.png"), dpi=150)
+    plt.close()
+    print(f"  Loss plot sauvegardé dans {out_dir}/loss_curves.png")
+
+
+
     if not hist_erm or not hist_irm:
         return
 
@@ -867,6 +909,7 @@ def main():
     plot_comparison(results_erm, results_irm, args.out_dir)
     plot_per_genre(results_erm, results_irm, args.out_dir)
     plot_training_history(hist_erm, hist_irm, args.out_dir)
+    plot_loss_curves(hist_erm, hist_irm, args.out_dir)
 
     print("\n✓ Terminé.")
 

@@ -618,13 +618,14 @@ def _conf_global_split(seed: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray, i
 # a ≈ 0  → Z ≈ C  → token fortement corrélé avec Y (via C)
 # a = 0.5 → Z aléatoire → pas de corrélation token–Y
 # a ≈ 1  → Z ≈ NOT C → token anti-corrélé avec Y → ERM piégé en OOD
+# Flip de label : C ~ Ber(p_c_flip=0.25), si C=1 → flip déterministe.
 # =============================================================================
 
 def build_envs_nlp_conf_varying_proxy(
     a_train: List[float],
     a_test: float,
     seed: int,
-    gamma: float = 0.5,
+    p_c_flip: float = 0.25,
     bert_model: str = "bert-base-uncased",
     max_length: int = 128,
     device: str = "cpu",
@@ -633,15 +634,16 @@ def build_envs_nlp_conf_varying_proxy(
     """
     SMS Spam — confounding avec variation du proxy Z = C XOR Ber(a_e).
 
-    DAG :  C → Z(a_e) → token ; C → Y (flip prob gamma) ; text → Y
+    DAG :  C ~ Ber(p_c_flip) → Z(a_e) → token ; C → Y (flip déterministe si C=1) ; text → Y
     Variation d'env : a_e (bruit sur C→Z).
     OOD : a_test ≈ 1 → token anti-corrélé avec Y.
 
     Parameters
     ----------
-    a_train : List[float]   Bruit proxy par env train (ex : [0.01, 0.11]).
-    a_test  : float         Bruit proxy OOD (ex : 0.99).
-    gamma   : float         Prob que C=1 bruite le label (force du confounding).
+    a_train  : List[float]  Bruit proxy par env train (ex : [0.01, 0.11]).
+    a_test   : float        Bruit proxy OOD (ex : 0.99).
+    p_c_flip : float        P(C=1) = fraction des labels flippés (défaut 0.25).
+                            Le flip est déterministe : C=1 ⟹ label toujours inversé.
     """
     print("Chargement du dataset SMS Spam (confounding – varying proxy)...")
     all_texts, all_labels, indices, n_total = _conf_global_split(seed)
@@ -664,39 +666,39 @@ def build_envs_nlp_conf_varying_proxy(
         labels = all_labels[env_idx]
 
         rng_e = np.random.default_rng(seed + i * 7)
-        C = rng_e.binomial(1, 0.5, size=len(labels))
+        C = rng_e.binomial(1, p_c_flip, size=len(labels))
         N = rng_e.binomial(1, a_e,  size=len(labels))
         Z = np.logical_xor(C, N).astype(int)
 
-        X, Y = _conf_make_env(texts, labels, C, Z, gamma, rng_e, bert_model, max_length, device, pooling)
+        X, Y = _conf_make_env(texts, labels, C, Z, 1.0, rng_e, bert_model, max_length, device, pooling)
         train_envs.append(Env(torch.from_numpy(X), torch.from_numpy(Y),
-                              meta={"kind": "nlp_conf_varying_proxy", "a": a_e, "gamma": gamma,
+                              meta={"kind": "nlp_conf_varying_proxy", "a": a_e, "p_c_flip": p_c_flip,
                                     "split": "train", "env_id": i, "n_samples": len(X)}))
 
         print(f"=== Val Env {i} (a={a_e}) ===")
         val_texts  = [all_texts[j]  for j in val_idx]
         val_labels = all_labels[val_idx]
         rng_v = np.random.default_rng(seed + 5000 + i)
-        Cv = rng_v.binomial(1, 0.5, size=len(val_labels))
+        Cv = rng_v.binomial(1, p_c_flip, size=len(val_labels))
         Nv = rng_v.binomial(1, a_e,  size=len(val_labels))
         Zv = np.logical_xor(Cv, Nv).astype(int)
-        X_val, Y_val = _conf_make_env(val_texts, val_labels, Cv, Zv, gamma, rng_v,
+        X_val, Y_val = _conf_make_env(val_texts, val_labels, Cv, Zv, 1.0, rng_v,
                                       bert_model, max_length, device, pooling)
         val_envs.append(Env(torch.from_numpy(X_val), torch.from_numpy(Y_val),
-                            meta={"kind": "nlp_conf_varying_proxy", "a": a_e, "gamma": gamma,
+                            meta={"kind": "nlp_conf_varying_proxy", "a": a_e, "p_c_flip": p_c_flip,
                                   "split": "val", "env_id": i, "n_samples": len(X_val)}))
 
     print(f"\n=== Test OOD (a={a_test}) ===")
     test_texts  = [all_texts[j]  for j in test_idx]
     test_labels = all_labels[test_idx]
     rng_t = np.random.default_rng(seed + 777)
-    Ct = rng_t.binomial(1, 0.5, size=len(test_labels))
+    Ct = rng_t.binomial(1, p_c_flip, size=len(test_labels))
     Nt = rng_t.binomial(1, a_test, size=len(test_labels))
     Zt = np.logical_xor(Ct, Nt).astype(int)
-    X_test, Y_test = _conf_make_env(test_texts, test_labels, Ct, Zt, gamma, rng_t,
+    X_test, Y_test = _conf_make_env(test_texts, test_labels, Ct, Zt, 1.0, rng_t,
                                     bert_model, max_length, device, pooling)
     test_env = Env(torch.from_numpy(X_test), torch.from_numpy(Y_test),
-                   meta={"kind": "nlp_conf_varying_proxy", "a": a_test, "gamma": gamma,
+                   meta={"kind": "nlp_conf_varying_proxy", "a": a_test, "p_c_flip": p_c_flip,
                          "split": "test_ood", "n_samples": len(X_test)})
 
     print(f"\n✅ Confounding varying proxy — Done!")
@@ -2474,14 +2476,8 @@ def build_envs_ag_news_semi_anti_causal(
 
 
 # =============================================================================
-# Confounding — helpers multiclasse (AG News)
+# Confounding — helper SST-2 (tokens binaires)
 # =============================================================================
-# Tokens binaires dédiés au confounding AG News (distincts des AG_NEWS_TOKENS SAC).
-AG_NEWS_CONF_TOKENS: Dict[int, str] = {
-    0: "cold",   # Z=0 (côté C=0)
-    1: "warm",   # Z=1 (côté C=1)
-}
-
 # Tokens binaires dédiés au confounding SST-2 (réutilise SST2_TOKENS).
 _SST2_CONF_TOKENS: Dict[str, str] = {
     "ham_correlated":  SST2_TOKENS[0],   # "north" (label 0 = négatif)
@@ -2489,92 +2485,97 @@ _SST2_CONF_TOKENS: Dict[str, str] = {
 }
 
 
-def _apply_conf_label_flip_multiclass(
-    labels: np.ndarray,    # int64, valeurs 0..n_classes-1
-    C: np.ndarray,
-    gamma: float,
-    n_classes: int,
-    rng: np.random.Generator,
-) -> np.ndarray:
-    """
-    Multiclasse : quand C=1, assigne une classe aléatoire ≠ label avec prob gamma.
-    """
-    out = labels.copy()
-    if gamma > 0.0:
-        mask = (C == 1) & (rng.uniform(size=len(out)) < gamma)
-        for k in np.where(mask)[0]:
-            others = [c for c in range(n_classes) if c != out[k]]
-            out[k] = int(rng.choice(others))
-    return out
+# =============================================================================
+# AG News — Confounding variant 1 : varying proxy (multiclasse)
+# =============================================================================
+# DAG : C ∈ {0,1,2,3}\{Y}  avec prob p_c_flip  (confondeur multiclasse)
+#       Y_obs = C  si C fire,  sinon Y_obs = Y
+#       Z_init = Y_obs
+#       Z = Z_init  avec prob (1-a_e),  sinon classe aléatoire ≠ Z_init
+#       token = AG_NEWS_TOKENS[Z]   (red/blue/green/yellow — 4 tokens distincts)
+#
+# Garantie : token corrélé à Y_obs en train (a_e≈0), anti-corrélé en OOD (a_e≈1).
+# Évaluation OOD : labels vrais (Y, pas Y_obs) pour mesure propre.
+# Variation d'env : a_e.
+# =============================================================================
 
-
-def _conf_make_env_multiclass(
+def _conf_ag_news_make_env(
     texts: List[str],
-    labels: np.ndarray,           # int64, labels originaux (avant bruitage)
-    C: np.ndarray,                # confondeur binaire (n,)
-    Z: np.ndarray,                # proxy spurieux binaire (n,)
-    gamma: float,
-    n_classes: int,
+    labels: np.ndarray,        # int64 vrais labels (avant bruitage)
+    a_e: float,                # bruit sur Z (0=clean, 1=entièrement bruité)
     rng: np.random.Generator,
     bert_model: str,
     max_length: int,
     device: str,
     pooling: str,
-    conf_tokens: Dict[int, str],  # {0: token_Z0, 1: token_Z1}
-    apply_gamma: bool = True,
+    p_c_flip: float,
+    apply_label_flip: bool = True,  # False pour test OOD → retourne vrais labels
+    n_classes: int = 4,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Version multiclasse de _conf_make_env.
-      - Bruite les labels via C (flip vers classe aléatoire si apply_gamma)
-      - Injecte un token binaire basé sur Z (pas sur Y)
-      - Retourne (X, Y) avec Y en int64 1D (compatible format AG News)
+    Construit un environnement AG News confounding (multiclasse).
+
+    Mécanisme :
+      1. Pour chaque sample, avec prob p_c_flip : C ~ Uniform({0..3}\\{Y})
+         → Y_obs = C ;  sinon Y_obs = Y.
+      2. Z_init = Y_obs.
+      3. Bruit a_e : avec prob a_e, Z = classe aléatoire ≠ Z_init.
+      4. token injecté = AG_NEWS_TOKENS[Z].
+      5. Si apply_label_flip=False (test OOD), retourne les vrais labels.
     """
-    labels_obs = (
-        _apply_conf_label_flip_multiclass(labels, C, gamma, n_classes, rng)
-        if apply_gamma else labels.copy()
-    )
-    bin_tokens = {"ham_correlated": conf_tokens[0], "spam_correlated": conf_tokens[1]}
+    n = len(labels)
+
+    # ── Étape 1 : bruitage des labels (C multiclasse) ──────────────────────
+    Y_obs = labels.copy()
+    flip_mask = rng.uniform(size=n) < p_c_flip
+    for k in np.where(flip_mask)[0]:
+        others = [c for c in range(n_classes) if c != labels[k]]
+        Y_obs[k] = int(rng.choice(others))
+
+    # ── Étape 2-3 : calcul de Z avec bruit a_e ─────────────────────────────
+    Z = Y_obs.copy()
+    noise_mask = rng.uniform(size=n) < a_e
+    for k in np.where(noise_mask)[0]:
+        others = [c for c in range(n_classes) if c != Z[k]]
+        Z[k] = int(rng.choice(others))
+
+    # ── Étape 4 : injection du token spurieux ──────────────────────────────
     rng_inj = np.random.default_rng(int(rng.integers(0, 2**31)))
     texts_mod = [
-        inject_spurious_token(text, int(z), 1.0, bin_tokens, rng_inj)
+        inject_spurious_token_multiclass(text, int(z), 1.0, AG_NEWS_TOKENS, rng_inj)
         for text, z in zip(texts, Z)
     ]
+
     X = tokenize_and_embed_with_bert(texts_mod, bert_model, max_length, device, pooling)
-    return X, labels_obs
+    Y_out = Y_obs if apply_label_flip else labels
+    return X, Y_out.astype(np.int64)
 
-
-# =============================================================================
-# AG News — Confounding variant 1 : varying proxy
-# =============================================================================
-# DAG : C → Z(a_e) = C XOR Ber(a_e) → token binaire (cold/warm)
-#       C → Y (flip vers classe aléatoire avec prob gamma)
-#       texte → Y
-# Variation d'env : a_e (bruit sur C→Z).
-# OOD : a_test ≈ 1 → token anti-corrélé avec le label.
-# =============================================================================
 
 def build_envs_ag_news_conf_varying_proxy(
     a_train: List[float],
     a_test: float,
     seed: int,
-    gamma: float = 0.5,
+    p_c_flip: float = 0.25,
     bert_model: str = "bert-base-uncased",
     max_length: int = 256,
     device: str = "cpu",
     pooling: str = "mean",
 ) -> Tuple[List[Env], List[Env], Env]:
     """
-    AG News — confounding avec variation du proxy Z = C XOR Ber(a_e).
+    AG News — confounding multiclasse avec variation du proxy.
 
-    Même DAG que nlp_sms_spam_conf_varying_proxy mais sur AG News (4 classes).
-    Le token injecté est binaire (cold/warm) et le bruitage de label est
-    multiclasse (classe aléatoire ≠ label).
+    DAG : C ∈ {0..3}\\{Y} avec prob p_c_flip → Y_obs = C, Z_init = C
+          Z = Z_init XOR bruit(a_e) → token = AG_NEWS_TOKENS[Z]
+
+    Le token est directement indexé sur la classe (red=World, blue=Sports, …)
+    ce qui garantit une corrélation spurieuse exploitable par ERM en train
+    (a_e≈0) et une rupture nette en OOD (a_e≈1).
 
     Parameters
     ----------
-    a_train : List[float]   Bruit proxy par env train (ex : [0.01, 0.1]).
-    a_test  : float         Bruit proxy OOD (ex : 0.99).
-    gamma   : float         Prob que C=1 bruite le label (force du confounding).
+    a_train  : List[float]  Bruit proxy par env train (ex : [0.01, 0.1]).
+    a_test   : float        Bruit proxy OOD (ex : 0.99).
+    p_c_flip : float        Probabilité de flip de label (défaut 0.25).
     """
     print("Chargement du dataset AG News (confounding – varying proxy)...")
     all_texts, all_labels = load_ag_news_dataset(seed=seed)
@@ -2589,62 +2590,61 @@ def build_envs_ag_news_conf_varying_proxy(
     val_idx   = indices[n_test:n_test + n_val]
     train_idx = indices[n_test + n_val:]
     print(f"Dataset : {n_total} articles | Split 80/10/10 : "
-          f"Train {len(train_idx)} | Val {len(val_idx)} | Test {len(n_test if False else test_idx)}")
+          f"Train {len(train_idx)} | Val {len(val_idx)} | Test {len(test_idx)}")
 
     n_envs = len(a_train)
     spe = len(train_idx) // n_envs
     train_envs: List[Env] = []
     val_envs:   List[Env] = []
 
+    val_texts  = [all_texts[int(j)] for j in val_idx]
+    val_labels = all_labels_arr[val_idx]
+
     for i, a_e in enumerate(a_train):
         print(f"\n=== Train Env {i} (a={a_e}) ===")
         env_idx = train_idx[i * spe:(i + 1) * spe if i < n_envs - 1 else len(train_idx)]
-        texts  = [all_texts[int(j)]  for j in env_idx]
+        texts  = [all_texts[int(j)] for j in env_idx]
         labels = all_labels_arr[env_idx]
 
         rng_e = np.random.default_rng(seed + i * 7)
-        C = rng_e.binomial(1, 0.5, size=len(labels))
-        N = rng_e.binomial(1, a_e,  size=len(labels))
-        Z = np.logical_xor(C, N).astype(int)
-
-        X, Y = _conf_make_env_multiclass(
-            texts, labels, C, Z, gamma, 4, rng_e,
-            bert_model, max_length, device, pooling, AG_NEWS_CONF_TOKENS,
+        X, Y = _conf_ag_news_make_env(
+            texts, labels, a_e, rng_e,
+            bert_model, max_length, device, pooling, p_c_flip,
+            apply_label_flip=True,
         )
-        train_envs.append(Env(torch.from_numpy(X), torch.from_numpy(Y),
-                              meta={"kind": "ag_news_conf_varying_proxy", "a": a_e, "gamma": gamma,
-                                    "split": "train", "env_id": i, "n_samples": len(X), "n_classes": 4}))
+        train_envs.append(Env(
+            torch.from_numpy(X), torch.from_numpy(Y),
+            meta={"kind": "ag_news_conf_varying_proxy", "a": a_e, "p_c_flip": p_c_flip,
+                  "split": "train", "env_id": i, "n_samples": len(X), "n_classes": 4},
+        ))
 
         print(f"=== Val Env {i} (a={a_e}) ===")
-        val_texts  = [all_texts[int(j)]  for j in val_idx]
-        val_labels = all_labels_arr[val_idx]
         rng_v = np.random.default_rng(seed + 5000 + i)
-        Cv = rng_v.binomial(1, 0.5, size=len(val_labels))
-        Nv = rng_v.binomial(1, a_e,  size=len(val_labels))
-        Zv = np.logical_xor(Cv, Nv).astype(int)
-        X_val, Y_val = _conf_make_env_multiclass(
-            val_texts, val_labels, Cv, Zv, gamma, 4, rng_v,
-            bert_model, max_length, device, pooling, AG_NEWS_CONF_TOKENS,
+        X_val, Y_val = _conf_ag_news_make_env(
+            val_texts, val_labels, a_e, rng_v,
+            bert_model, max_length, device, pooling, p_c_flip,
+            apply_label_flip=True,
         )
-        val_envs.append(Env(torch.from_numpy(X_val), torch.from_numpy(Y_val),
-                            meta={"kind": "ag_news_conf_varying_proxy", "a": a_e, "gamma": gamma,
-                                  "split": "val", "env_id": i, "n_samples": len(X_val), "n_classes": 4}))
+        val_envs.append(Env(
+            torch.from_numpy(X_val), torch.from_numpy(Y_val),
+            meta={"kind": "ag_news_conf_varying_proxy", "a": a_e, "p_c_flip": p_c_flip,
+                  "split": "val", "env_id": i, "n_samples": len(X_val), "n_classes": 4},
+        ))
 
     print(f"\n=== Test OOD (a={a_test}) ===")
-    test_texts  = [all_texts[int(j)]  for j in test_idx]
+    test_texts  = [all_texts[int(j)] for j in test_idx]
     test_labels = all_labels_arr[test_idx]
     rng_t = np.random.default_rng(seed + 777)
-    Ct = rng_t.binomial(1, 0.5, size=len(test_labels))
-    Nt = rng_t.binomial(1, a_test, size=len(test_labels))
-    Zt = np.logical_xor(Ct, Nt).astype(int)
-    X_test, Y_test = _conf_make_env_multiclass(
-        test_texts, test_labels, Ct, Zt, gamma, 4, rng_t,
-        bert_model, max_length, device, pooling, AG_NEWS_CONF_TOKENS,
-        apply_gamma=False,
+    X_test, Y_test = _conf_ag_news_make_env(
+        test_texts, test_labels, a_test, rng_t,
+        bert_model, max_length, device, pooling, p_c_flip,
+        apply_label_flip=False,  # évaluation sur vrais labels
     )
-    test_env = Env(torch.from_numpy(X_test), torch.from_numpy(Y_test),
-                   meta={"kind": "ag_news_conf_varying_proxy", "a": a_test, "gamma": gamma,
-                         "split": "test_ood", "n_samples": len(X_test), "n_classes": 4})
+    test_env = Env(
+        torch.from_numpy(X_test), torch.from_numpy(Y_test),
+        meta={"kind": "ag_news_conf_varying_proxy", "a": a_test, "p_c_flip": p_c_flip,
+              "split": "test_ood", "n_samples": len(X_test), "n_classes": 4},
+    )
 
     print(f"\n✅ AG News Confounding varying proxy — Done!")
     print(f"   Train : {sum(e.X.shape[0] for e in train_envs)} | "
@@ -2656,8 +2656,8 @@ def build_envs_ag_news_conf_varying_proxy(
 # SST-2 — Confounding variant 1 : varying proxy
 # =============================================================================
 # Même DAG que SMS Spam confounding mais sur SST-2 (binaire, anti-causal Y→X).
-# DAG : C → Z(a_e) = C XOR Ber(a_e) → token (north/south)
-#       C → Y (flip avec prob gamma)
+# DAG : C ~ Ber(p_c_flip) → Z(a_e) = C XOR Ber(a_e) → token (north/south)
+#       C → Y (flip déterministe si C=1)
 #       texte → Y
 # =============================================================================
 
@@ -2665,7 +2665,7 @@ def build_envs_sst2_conf_varying_proxy(
     a_train: List[float],
     a_test: float,
     seed: int,
-    gamma: float = 0.5,
+    p_c_flip: float = 0.25,
     bert_model: str = "bert-base-uncased",
     max_length: int = 128,
     device: str = "cpu",
@@ -2680,9 +2680,10 @@ def build_envs_sst2_conf_varying_proxy(
 
     Parameters
     ----------
-    a_train : List[float]   Bruit proxy par env train (ex : [0.01, 0.1]).
-    a_test  : float         Bruit proxy OOD (ex : 0.99).
-    gamma   : float         Prob que C=1 bruite le label.
+    a_train  : List[float]  Bruit proxy par env train (ex : [0.01, 0.1]).
+    a_test   : float        Bruit proxy OOD (ex : 0.99).
+    p_c_flip : float        P(C=1) = fraction des labels flippés (défaut 0.25).
+                            Le flip est déterministe : C=1 ⟹ label toujours inversé.
     """
     print("Chargement du dataset SST-2 (confounding – varying proxy)...")
     all_texts, all_labels = load_sst2_dataset(seed=seed)
@@ -2711,49 +2712,49 @@ def build_envs_sst2_conf_varying_proxy(
         labels = all_labels_arr[env_idx]
 
         rng_e = np.random.default_rng(seed + i * 7)
-        C = rng_e.binomial(1, 0.5, size=len(labels))
+        C = rng_e.binomial(1, p_c_flip, size=len(labels))
         N = rng_e.binomial(1, a_e,  size=len(labels))
         Z = np.logical_xor(C, N).astype(int)
 
         X, Y = _conf_make_env(
-            texts, labels.astype(np.float32), C, Z, gamma, rng_e,
+            texts, labels.astype(np.float32), C, Z, 1.0, rng_e,
             bert_model, max_length, device, pooling,
             apply_gamma=True, conf_tokens=_SST2_CONF_TOKENS,
         )
         train_envs.append(Env(torch.from_numpy(X), torch.from_numpy(Y),
-                              meta={"kind": "sst2_conf_varying_proxy", "a": a_e, "gamma": gamma,
+                              meta={"kind": "sst2_conf_varying_proxy", "a": a_e, "p_c_flip": p_c_flip,
                                     "split": "train", "env_id": i, "n_samples": len(X)}))
 
         print(f"=== Val Env {i} (a={a_e}) ===")
         val_texts  = [all_texts[int(j)]  for j in val_idx]
         val_labels = all_labels_arr[val_idx]
         rng_v = np.random.default_rng(seed + 5000 + i)
-        Cv = rng_v.binomial(1, 0.5, size=len(val_labels))
+        Cv = rng_v.binomial(1, p_c_flip, size=len(val_labels))
         Nv = rng_v.binomial(1, a_e,  size=len(val_labels))
         Zv = np.logical_xor(Cv, Nv).astype(int)
         X_val, Y_val = _conf_make_env(
-            val_texts, val_labels.astype(np.float32), Cv, Zv, gamma, rng_v,
+            val_texts, val_labels.astype(np.float32), Cv, Zv, 1.0, rng_v,
             bert_model, max_length, device, pooling,
             apply_gamma=True, conf_tokens=_SST2_CONF_TOKENS,
         )
         val_envs.append(Env(torch.from_numpy(X_val), torch.from_numpy(Y_val),
-                            meta={"kind": "sst2_conf_varying_proxy", "a": a_e, "gamma": gamma,
+                            meta={"kind": "sst2_conf_varying_proxy", "a": a_e, "p_c_flip": p_c_flip,
                                   "split": "val", "env_id": i, "n_samples": len(X_val)}))
 
     print(f"\n=== Test OOD (a={a_test}) ===")
     test_texts  = [all_texts[int(j)]  for j in test_idx]
     test_labels = all_labels_arr[test_idx]
     rng_t = np.random.default_rng(seed + 777)
-    Ct = rng_t.binomial(1, 0.5, size=len(test_labels))
+    Ct = rng_t.binomial(1, p_c_flip, size=len(test_labels))
     Nt = rng_t.binomial(1, a_test, size=len(test_labels))
     Zt = np.logical_xor(Ct, Nt).astype(int)
     X_test, Y_test = _conf_make_env(
-        test_texts, test_labels.astype(np.float32), Ct, Zt, gamma, rng_t,
+        test_texts, test_labels.astype(np.float32), Ct, Zt, 1.0, rng_t,
         bert_model, max_length, device, pooling,
         apply_gamma=False, conf_tokens=_SST2_CONF_TOKENS,
     )
     test_env = Env(torch.from_numpy(X_test), torch.from_numpy(Y_test),
-                   meta={"kind": "sst2_conf_varying_proxy", "a": a_test, "gamma": gamma,
+                   meta={"kind": "sst2_conf_varying_proxy", "a": a_test, "p_c_flip": p_c_flip,
                          "split": "test_ood", "n_samples": len(X_test)})
 
     print(f"\n✅ SST-2 Confounding varying proxy — Done!")

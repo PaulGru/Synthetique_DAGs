@@ -89,7 +89,9 @@ def make_nlp_parser() -> argparse.ArgumentParser:
     p.add_argument('--nlp_conf_gamma_test', type=float, default=0.0,
                    help='C→Y flip prob for OOD test (conf_varying_gamma)')
     p.add_argument('--nlp_conf_gamma', type=float, default=0.5,
-                   help='Fixed C→Y flip prob (conf_varying_proxy / conf_varying_pc)')
+                   help='Fixed C→Y flip prob (conf_varying_pc only)')
+    p.add_argument('--nlp_conf_p_c_flip', type=float, default=0.25,
+                   help='P(C=1) = flip rate for conf_varying_proxy (flip déterministe si C=1)')
     p.add_argument('--nlp_conf_pc_train', type=float, nargs='+', default=[0.8, 0.5],
                    help='Prevalence of C per train env (conf_varying_pc)')
     p.add_argument('--nlp_conf_pc_test', type=float, default=0.1,

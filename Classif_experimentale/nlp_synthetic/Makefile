@@ -96,7 +96,7 @@ nlp_sms_spam_size_selection:
 # ─────────────────────────────────────────────────────────────────────────────
 # SMS Spam — Confounding (3 variants)
 # ─────────────────────────────────────────────────────────────────────────────
-# DAG commun : C → Z → token ; C → Y (flip gamma) ; text → Y
+# DAG commun : C ~ Ber(p_c_flip) → Z → token ; C → Y (flip déterministe si C=1) ; text → Y
 # Variant 1 : bruit proxy a_e varie (a ≈ 0 en train → a ≈ 1 en test OOD)
 # Variant 2 : force C→Y gamma_e varie (gamma > 0 en train → gamma=0 en OOD)
 # Variant 3 : prévalence p_e varie (forte en train → faible en OOD)
@@ -105,19 +105,19 @@ CONF_ERM_STEPS   ?= 25000
 CONF_ERM_LR      ?= 1e-4
 CONF_IRM_STEPS   ?= 25000
 CONF_IRM_LR      ?= 1e-4
-CONF_IRM_LAMBDA  ?= 150.0
+CONF_IRM_LAMBDA  ?= 100.0
 
 # ── Variant 1 : varying proxy ──
 CONF_PROXY_A_TRAIN  ?= 0.01 0.1
 CONF_PROXY_A_TEST   ?= 1.0
-CONF_PROXY_GAMMA    ?= 0.5
+CONF_PROXY_P_C_FLIP ?= 0.25
 
 nlp_sms_spam_conf_varying_proxy:
 	cd $(ROOT) && $(PYTHON) nlp_synthetic/main_nlp.py \
 		--dataset nlp_sms_spam_conf_varying_proxy \
 		--nlp_conf_a_train $(CONF_PROXY_A_TRAIN) \
 		--nlp_conf_a_test $(CONF_PROXY_A_TEST) \
-		--nlp_conf_gamma $(CONF_PROXY_GAMMA) \
+		--nlp_conf_p_c_flip $(CONF_PROXY_P_C_FLIP) \
 		--erm_steps $(CONF_ERM_STEPS) \
 		--erm_lr $(CONF_ERM_LR) \
 		--irm_steps $(CONF_IRM_STEPS) \
@@ -186,7 +186,7 @@ nlp_agnews_source_selection:
 # ─────────────────────────────────────────────────────────────────────────────
 AGNN_CONF_PROXY_A_TRAIN  ?= 0.01 0.1
 AGNN_CONF_PROXY_A_TEST   ?= 1.0
-AGNN_CONF_PROXY_GAMMA    ?= 0.5
+AGNN_CONF_PROXY_P_C_FLIP ?= 0.25
 AGNN_CONF_ERM_STEPS      ?= 25000
 AGNN_CONF_ERM_LR         ?= 1e-4
 AGNN_CONF_IRM_STEPS      ?= 25000
@@ -198,7 +198,7 @@ nlp_agnews_conf_varying_proxy:
 		--dataset nlp_agnews_conf_varying_proxy \
 		--nlp_conf_a_train $(AGNN_CONF_PROXY_A_TRAIN) \
 		--nlp_conf_a_test $(AGNN_CONF_PROXY_A_TEST) \
-		--nlp_conf_gamma $(AGNN_CONF_PROXY_GAMMA) \
+		--nlp_conf_p_c_flip $(AGNN_CONF_PROXY_P_C_FLIP) \
 		--nlp_max_length 256 \
 		--erm_steps $(AGNN_CONF_ERM_STEPS) \
 		--erm_lr $(AGNN_CONF_ERM_LR) \
@@ -285,7 +285,7 @@ SST2_GENRE_ERM_STEPS  ?= 25000
 SST2_GENRE_ERM_LR     ?= 5e-4
 SST2_GENRE_IRM_STEPS  ?= 25000
 SST2_GENRE_IRM_LR     ?= 5e-4
-SST2_GENRE_IRM_LAMBDA ?= 350.0
+SST2_GENRE_IRM_LAMBDA ?= 450.0
 
 nlp_sst2_genre_selection:
 	cd $(ROOT) && $(PYTHON) nlp_synthetic/main_nlp.py \
@@ -305,7 +305,7 @@ nlp_sst2_genre_selection:
 # ─────────────────────────────────────────────────────────────────────────────
 SST2_CONF_PROXY_A_TRAIN  ?= 0.01 0.1
 SST2_CONF_PROXY_A_TEST   ?= 1.0
-SST2_CONF_PROXY_GAMMA    ?= 0.5
+SST2_CONF_PROXY_P_C_FLIP ?= 0.25
 SST2_CONF_ERM_STEPS      ?= 25000
 SST2_CONF_ERM_LR         ?= 5e-4
 SST2_CONF_IRM_STEPS      ?= 25000
@@ -317,7 +317,7 @@ nlp_sst2_conf_varying_proxy:
 		--dataset nlp_sst2_conf_varying_proxy \
 		--nlp_conf_a_train $(SST2_CONF_PROXY_A_TRAIN) \
 		--nlp_conf_a_test $(SST2_CONF_PROXY_A_TEST) \
-		--nlp_conf_gamma $(SST2_CONF_PROXY_GAMMA) \
+		--nlp_conf_p_c_flip $(SST2_CONF_PROXY_P_C_FLIP) \
 		--erm_steps $(SST2_CONF_ERM_STEPS) \
 		--erm_lr $(SST2_CONF_ERM_LR) \
 		--irm_steps $(SST2_CONF_IRM_STEPS) \
@@ -328,9 +328,9 @@ nlp_sst2_conf_varying_proxy:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#all: nlp_sms_spam_conf_varying_proxy nlp_agnews_conf_varying_proxy nlp_sst2_conf_varying_proxy
-all: nlp_sms_spam_size_selection nlp_sst2_selection
-# nlp_sms_spam_semi_anti_causal nlp_agnews_semi_anti_causal nlp_agnews_source_selection nlp_sst2_semi_anti_causal
+all_conf: nlp_sms_spam_conf_varying_proxy nlp_agnews_conf_varying_proxy nlp_sst2_conf_varying_proxy
+all_selection: nlp_sms_spam_size_selection nlp_sst2_selection nlp_agnews_source_selection
+all_sac: nlp_sms_spam_semi_anti_causal nlp_agnews_semi_anti_causal nlp_sst2_semi_anti_causal
 
 # ── Variant 2 : varying gamma ──
 CONF_GAMMA_TRAIN    ?= 0.8 0.5
