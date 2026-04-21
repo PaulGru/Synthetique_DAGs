@@ -182,7 +182,8 @@ MNLI_HANS_LR_HEAD  ?= 5e-4
 MNLI_HANS_LAMBDA   ?= 25.0
 MNLI_HANS_BATCH    ?= 16
 MNLI_HANS_UNFROZEN ?= 2
-MNLI_HANS_EVAL     ?= 100
+MNLI_HANS_EVAL     ?= 10
+MNLI_HANS_MODEL    ?= distilbert-base-uncased
 
 multinli_hans:
 	cd $(ROOT) && $(PYTHON) $(SCRIPT_MULTINLI_HANS) \
@@ -195,4 +196,5 @@ multinli_hans:
 		--irm_lambda $(MNLI_HANS_LAMBDA) \
 		--n_unfrozen_layers $(MNLI_HANS_UNFROZEN) \
 		--eval_every $(MNLI_HANS_EVAL) \
-		--max_length $(MNLI_MAX_LENGTH)
+		--max_length $(MNLI_MAX_LENGTH) \
+		--bert_model $(MNLI_HANS_MODEL)

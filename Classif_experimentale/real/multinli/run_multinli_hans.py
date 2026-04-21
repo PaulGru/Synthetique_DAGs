@@ -742,7 +742,8 @@ def plot_loss_curves(hist_erm: list, hist_irm: list, out_dir: str):
     print(f"  Loss plot sauvegardé dans {out_dir}/loss_curves.png")
 
 
-
+def plot_training_history(hist_erm: list, hist_irm: list, out_dir: str):
+    """Courbes d'accuracy pendant le fine-tuning."""
     if not hist_erm or not hist_irm:
         return
 
@@ -783,7 +784,7 @@ def main():
     )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="auto")
-    parser.add_argument("--bert_model", type=str, default="bert-base-uncased")
+    parser.add_argument("--bert_model", type=str, default="distilbert-base-uncased")
     parser.add_argument("--max_length", type=int, default=256)
 
     # Fine-tuning
