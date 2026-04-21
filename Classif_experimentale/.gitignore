@@ -7,3 +7,12 @@ __pycache__/
 venv/
 .env*/
 .ipynb_checkpoints/
+.embed_cache/
+*.csv
+*.png
+**/plots/
+**/logs/
+**/cache/
+data/
+**/plots*/
+**/logs*/
