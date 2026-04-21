@@ -1,1 +1,93 @@
+# IDE and Editors
+.vscode/
+.vscode-server/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Environment
+miniconda3/
+.conda/
+.python_history
+.venv/
+venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+build/
+dist/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# System files
+.bashrc*
+.zshrc
+.profile
+.gitconfig
+.ssh/
+.config/
+.local/
+.cache/
+.bash_history
+.wget-hsts
+.lesshst
+.netrc
+.nv/
+.viminfo
+.antigravity-server/
+.claude/
+.claude.json
+.copilot/
+.codex/
+.keras/
+.dotnet/
+.gemini/
+
+# Temporary files
+..bashrc.swp
+.tmux.conf*
+
+# Project-specific
+*.swp
+.env
+.env.local
+wandb/
+runs/
+logs/
+
+# Data files
+*.csv
+*.json
+*.xlsx
+*.xls
+*.txt
+!requirements*.txt
+!README.txt
+*.pkl
+*.pickle
+*.npz
+*.npy
+*.h5
+
+# Model files (too large for GitHub)
+*.safetensors
+*.pt
+*.pth
+*.ckpt
+*.bin
+runs_toy/
+
+# Directories
 InvariantRiskMinimiztion/
+
+# OS
+Thumbs.db
+.DS_Store

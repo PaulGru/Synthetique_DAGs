@@ -1,0 +1,18 @@
+# Modernized requirements (tested with Transformers 4.44+ / PyTorch 2.2+)
+accelerate>=0.30.0,<0.35
+datasets>=2.18.0,<3.0.0
+evaluate>=0.4.0
+huggingface-hub>=0.23.0
+numpy>=1.24.0
+pandas>=2.1.0
+pyarrow>=14.0.0
+python-dateutil>=2.8.2
+pytz>=2023.3
+regex>=2023.6.0
+requests>=2.31.0
+tqdm>=4.66.0
+tokenizers>=0.15.0
+torch>=2.1.0
+torchvision>=0.16.0
+transformers>=4.44.0
+xxhash>=3.0.0
