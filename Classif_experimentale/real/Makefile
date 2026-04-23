@@ -176,13 +176,13 @@ multinli_irm_ft:
 # ---- MultiNLI → HANS (exp. i) ----
 # Fine-tune ERM vs IRM sur MNLI uniquement (5 genres),
 # évaluation OOD sur val_mismatched + HANS (heuristiques NLI)
-MNLI_HANS_EPOCHS   ?= 3
+MNLI_HANS_EPOCHS   ?= 5
 MNLI_HANS_LR_BERT  ?= 1e-5
 MNLI_HANS_LR_HEAD  ?= 5e-4
-MNLI_HANS_LAMBDA   ?= 25.0
-MNLI_HANS_BATCH    ?= 16
+MNLI_HANS_LAMBDA   ?= 50.0
+MNLI_HANS_BATCH    ?= 64
 MNLI_HANS_UNFROZEN ?= 2
-MNLI_HANS_EVAL     ?= 10
+MNLI_HANS_EVAL     ?= 200
 MNLI_HANS_MODEL    ?= distilbert-base-uncased
 
 multinli_hans:

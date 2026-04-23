@@ -1,26 +1,17 @@
 #!/usr/bin/env python3
 """
-run_multinli_hans.py
-====================
+run_multinli_monli.py
+======================
 Fine-tune les dernières couches de BERT avec ERM vs IRMv1 sur MultiNLI
-(5 genres = 5 environnements) et évalue sur :
+(2 genres = 2 environnements) et évalue sur :
 
-    - MNLI validation_matched   (ID)
+    - MNLI validation_matched (ID, filtré sur les genres d'entraînement)
     - MNLI validation_mismatched (OOD lexicale / domaine)
-    - HANS validation            (OOD heuristique, biais NLI)
-
-HANS (McCoy et al., 2019) est un benchmark adversarial qui teste si le modèle
-exploite des heuristiques superficielles (chevauchement lexical, sous-séquence,
-structure syntaxique) plutôt que le raisonnement NLI réel.
-
-Mapping 3-classes → 2-classes pour HANS :
-    prédiction 0 (entailment)  → 0 (entailment)
-    prédiction 1 (neutral)     → 1 (non_entailment)
-    prédiction 2 (contradiction) → 1 (non_entailment)
+    - MoNLI pmonli (OOD)
+    - MoNLI nmonli_test (OOD)
 
 Usage :
-    uv run real/multinli/run_multinli_hans.py --device auto
-    uv run real/multinli/run_multinli_hans.py --irm_lambda 100 --epochs 3
+    uv run real/multinli/run_multinli_monli.py --device auto
 """
 from __future__ import annotations
 
@@ -35,7 +26,8 @@ for _p in [str(_ROOT), str(_ROOT / "shared")]:
 import argparse
 import json
 import os
-from typing import Dict, List, Tuple
+import urllib.request
+from typing import Dict, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -46,52 +38,50 @@ from torch.utils.data import DataLoader, Dataset
 
 from utils_irm import resolve_device
 
-
 # =============================================================================
 # 1. Chargement des datasets
 # =============================================================================
 
-TRAIN_GENRES = ["fiction", "government", "slate", "telephone", "travel"]
-HANS_HEURISTICS = ["lexical_overlap", "subsequence", "constituent"]
+TRAIN_GENRES = ["fiction", "government", "telephone", "travel", "slate"]
 
-
-def _load_hans_direct() -> dict:
+def _load_monli_direct() -> dict:
     """
-    Charge HANS depuis le dépôt officiel de McCoy et al. (TSV GitHub).
-
-    Contourne l'incompatibilité de datasets >= 3.x avec les dataset scripts.
-    Retourne un dict plat : {"premise", "hypothesis", "label", "heuristic"}.
+    Charge MoNLI depuis le dépôt officiel GitHub (atticusg/MoNLI).
     """
-    import urllib.request
+    monli_data = {}
+    base_url = "https://raw.githubusercontent.com/atticusg/MoNLI/master/"
+    files = ["pmonli.jsonl", "nmonli_test.jsonl"]
+    
+    label_map = {"entailment": 0, "neutral": 1, "contradiction": 2}
+    
+    for filename in files:
+        url = base_url + filename
+        print(f"  Téléchargement MoNLI depuis GitHub ({filename}) …")
+        
+        premises, hypotheses, labels = [], [], []
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req) as resp:
+            for line in resp:
+                if not line.strip():
+                    continue
+                data = json.loads(line.decode("utf-8"))
+                lbl_str = data.get("gold_label")
+                if lbl_str not in label_map:
+                    continue
+                premises.append(data["sentence1"])
+                hypotheses.append(data["sentence2"])
+                labels.append(label_map[lbl_str])
+        
+        monli_data[filename.split(".")[0]] = {
+            "premise": premises,
+            "hypothesis": hypotheses,
+            "label": labels
+        }
+        
+    return monli_data
 
-    URL = ("https://raw.githubusercontent.com/tommccoy1/hans/"
-           "master/heuristics_evaluation_set.txt")
-    print(f"  Téléchargement HANS depuis GitHub ({URL}) …")
-    with urllib.request.urlopen(URL) as resp:
-        content = resp.read().decode("utf-8")
-
-    lines  = content.strip().split("\n")
-    header = lines[0].split("\t")
-    col    = {name: idx for idx, name in enumerate(header)}
-
-    label_map = {"entailment": 0, "non-entailment": 1}
-    premises, hypotheses, labels, heuristics = [], [], [], []
-    for line in lines[1:]:
-        parts = line.split("\t")
-        lbl = label_map.get(parts[col["gold_label"]], -1)
-        if lbl == -1:
-            continue
-        premises.append(parts[col["sentence1"]])
-        hypotheses.append(parts[col["sentence2"]])
-        labels.append(lbl)
-        heuristics.append(parts[col["heuristic"]])
-
-    return {"premise": premises, "hypothesis": hypotheses,
-            "label": labels, "heuristic": heuristics}
-
-
-def load_all_datasets() -> Tuple[dict, dict, dict]:
-    """Charge MultiNLI, SNLI (HuggingFace) et HANS (GitHub TSV)."""
+def load_all_datasets() -> Tuple[dict, dict]:
+    """Charge MultiNLI (HuggingFace) et MoNLI (GitHub)."""
     from datasets import load_dataset
 
     print("Chargement de MultiNLI …")
@@ -100,32 +90,26 @@ def load_all_datasets() -> Tuple[dict, dict, dict]:
           f"val_matched: {len(mnli['validation_matched']):,}  "
           f"val_mismatched: {len(mnli['validation_mismatched']):,}")
 
-    print("Chargement de SNLI …")
-    snli = load_dataset("stanfordnlp/snli")
-    print(f"  train: {len(snli['train']):,}")
+    print("Chargement de MoNLI …")
+    monli = _load_monli_direct()
+    for k, v in monli.items():
+        print(f"  {k}: {len(v['label']):,} paires")
 
-    print("Chargement de HANS …")
-    hans = _load_hans_direct()
-    print(f"  validation: {len(hans['label']):,}")
-
-    return mnli, snli, hans
-
+    return mnli, monli
 
 # =============================================================================
 # 2. Dataset & DataLoader
 # =============================================================================
 
 class _NLIPairDataset(Dataset):
-    """Dataset NLI : tokenise les paires (premise, hypothesis) à la volée."""
+    """Dataset NLI."""
 
-    def __init__(self, premises, hypotheses, labels, tokenizer, max_length,
-                 extra: dict | None = None):
+    def __init__(self, premises, hypotheses, labels, tokenizer, max_length):
         self.premises   = premises
         self.hypotheses = hypotheses
         self.labels     = labels
         self.tokenizer  = tokenizer
         self.max_length = max_length
-        self.extra      = extra  # colonnes supplémentaires (ex. heuristic)
 
     def __len__(self):
         return len(self.labels)
@@ -136,14 +120,10 @@ class _NLIPairDataset(Dataset):
             "hypothesis": self.hypotheses[idx],
             "label": self.labels[idx],
         }
-        if self.extra:
-            for k, v in self.extra.items():
-                item[k] = v[idx]
         return item
 
-
-def _make_collate(tokenizer, extra_keys: list | None = None):
-    """Collate avec padding dynamique. Préserve les champs extra (ex. heuristic)."""
+def _make_collate(tokenizer):
+    """Collate avec padding dynamique."""
     def _collate(batch):
         padded = tokenizer(
             [item["premise"] for item in batch],
@@ -154,12 +134,8 @@ def _make_collate(tokenizer, extra_keys: list | None = None):
             return_tensors="pt"
         )
         padded["labels"] = torch.tensor([item["label"] for item in batch], dtype=torch.long)
-        if extra_keys:
-            for k in extra_keys:
-                padded[k] = [item[k] for item in batch]
         return padded
     return _collate
-
 
 def _extract_mnli(split_ds, genre: str | None = None):
     """Extrait (premises, hypotheses, labels) depuis un split MNLI."""
@@ -179,41 +155,10 @@ def _extract_mnli(split_ds, genre: str | None = None):
         labels.append(label)
     return premises, hypotheses, labels
 
-
-def _extract_snli(split_ds):
-    """Extrait (premises, hypotheses, labels) depuis un split SNLI."""
-    labels_col   = split_ds["label"]
-    premises_col = split_ds["premise"]
-    hyp_col      = split_ds["hypothesis"]
-
-    premises, hypotheses, labels = [], [], []
-    for idx, label in enumerate(labels_col):
-        if label == -1:
-            continue
-        premises.append(premises_col[idx])
-        hypotheses.append(hyp_col[idx])
-        labels.append(label)
-    return premises, hypotheses, labels
-
-
-def _extract_hans(split_ds):
-    """Extrait (premises, hypotheses, labels, heuristics) depuis HANS."""
-    premises    = split_ds["premise"]
-    hypotheses  = split_ds["hypothesis"]
-    labels      = split_ds["label"]       # 0=entailment, 1=non_entailment
-    heuristics  = split_ds["heuristic"]   # lexical_overlap / subsequence / constituent
-    # Filtrer labels invalides
-    valid = [(p, h, l, heu)
-             for p, h, l, heu in zip(premises, hypotheses, labels, heuristics)
-             if l != -1]
-    p, h, l, heu = zip(*valid)
-    return list(p), list(h), list(l), list(heu)
-
-
 def build_env_loaders(
-    mnli, snli, tokenizer, max_length: int, batch_size: int,
+    mnli, tokenizer, max_length: int, batch_size: int,
 ) -> Dict[str, DataLoader]:
-    """Construit un DataLoader par genre MNLI (5 envs) + SNLI (1 env)."""
+    """Construit un DataLoader par genre MNLI (envs)."""
     envs = {}
     collate = _make_collate(tokenizer)
 
@@ -227,76 +172,55 @@ def build_env_loaders(
                                  persistent_workers=n_workers > 0)
         print(f"  Env {genre:12s} : {len(ds):,} paires")
 
-    import numpy as np
-    target_size = int(np.mean([len(envs[g].dataset) for g in TRAIN_GENRES]))
-    
-    p_snli, h_snli, l_snli = _extract_snli(snli["train"])
-    # Limiter la taille de SNLI pour correspondre à la moyenne des environnements MNLI
-    p_snli = p_snli[:target_size]
-    h_snli = h_snli[:target_size]
-    l_snli = l_snli[:target_size]
-    
-    ds_snli = _NLIPairDataset(p_snli, h_snli, l_snli, tokenizer, max_length)
-    envs["snli"] = DataLoader(ds_snli, batch_size=batch_size, shuffle=True,
-                              num_workers=n_workers, collate_fn=collate,
-                              pin_memory=True, drop_last=False,
-                              persistent_workers=n_workers > 0)
-    print(f"  Env {'snli':12s} : {len(ds_snli):,} paires")
-
     return envs
 
-
 def build_eval_loaders(
-    mnli, hans, tokenizer, max_length: int, batch_size: int,
-) -> Tuple[Dict[str, DataLoader], DataLoader]:
+    mnli, monli, tokenizer, max_length: int, batch_size: int,
+) -> Dict[str, DataLoader]:
     """
-    Construit les loaders d'évaluation standard et le loader HANS séparé
-    (qui transporte aussi la colonne heuristic pour l'analyse par heuristique).
-
-    Returns
-    -------
-    eval_loaders : Dict[str, DataLoader]  — val_matched, val_mismatched, val_<genre>
-    hans_loader  : DataLoader             — HANS validation avec heuristic
+    Construit les loaders d'évaluation standard (val_matched filtré, val_mismatched, MoNLI).
     """
     collate_std = _make_collate(tokenizer)
     evals = {}
-
     n_workers = min(8, os.cpu_count() or 1)
-    # Val matched global (ID)
-    p, h, l = _extract_mnli(mnli["validation_matched"])
-    ds = _NLIPairDataset(p, h, l, tokenizer, max_length)
-    evals["val_matched"] = DataLoader(ds, batch_size=batch_size * 2, shuffle=False,
-                                      num_workers=n_workers, collate_fn=collate_std,
-                                      pin_memory=True)
 
-    # Val matched par genre (pour le détail)
+    # Val matched global (ID) : on ne garde que les genres utilisés
+    p_matched, h_matched, l_matched = [], [], []
     for genre in TRAIN_GENRES:
-        p, h, l = _extract_mnli(mnli["validation_matched"], genre=genre)
-        ds = _NLIPairDataset(p, h, l, tokenizer, max_length)
-        evals[f"val_{genre}"] = DataLoader(ds, batch_size=batch_size * 2, shuffle=False,
+        pg, hg, lg = _extract_mnli(mnli["validation_matched"], genre=genre)
+        p_matched.extend(pg)
+        h_matched.extend(hg)
+        l_matched.extend(lg)
+        
+        ds_g = _NLIPairDataset(pg, hg, lg, tokenizer, max_length)
+        evals[f"val_{genre}"] = DataLoader(ds_g, batch_size=batch_size * 2, shuffle=False,
                                            num_workers=n_workers, collate_fn=collate_std,
                                            pin_memory=True)
+        
+    ds_matched = _NLIPairDataset(p_matched, h_matched, l_matched, tokenizer, max_length)
+    evals["val_matched"] = DataLoader(ds_matched, batch_size=batch_size * 2, shuffle=False,
+                                      num_workers=n_workers, collate_fn=collate_std,
+                                      pin_memory=True)
+    
+    print(f"  Val Matched (filtré) : {len(ds_matched):,} paires")
 
     # Val mismatched (OOD)
-    p, h, l = _extract_mnli(mnli["validation_mismatched"])
-    ds = _NLIPairDataset(p, h, l, tokenizer, max_length)
-    evals["val_mismatched"] = DataLoader(ds, batch_size=batch_size * 2, shuffle=False,
+    p_mismatched, h_mismatched, l_mismatched = _extract_mnli(mnli["validation_mismatched"])
+    ds_mismatched = _NLIPairDataset(p_mismatched, h_mismatched, l_mismatched, tokenizer, max_length)
+    evals["val_mismatched"] = DataLoader(ds_mismatched, batch_size=batch_size * 2, shuffle=False,
                                          num_workers=n_workers, collate_fn=collate_std,
                                          pin_memory=True)
+    print(f"  Val Mismatched (OOD) : {len(ds_mismatched):,} paires")
 
-    # HANS (OOD heuristique) — avec heuristic pour l'analyse
-    # hans est un dict plat (chargé depuis GitHub TSV, pas un DatasetDict HF)
-    p, h, l, heu = _extract_hans(hans)
-    ds = _NLIPairDataset(p, h, l, tokenizer, max_length,
-                         extra={"heuristic": heu})
-    collate_hans = _make_collate(tokenizer, extra_keys=["heuristic"])
-    hans_loader = DataLoader(ds, batch_size=batch_size * 2, shuffle=False,
-                             num_workers=n_workers, collate_fn=collate_hans,
-                             pin_memory=True)
-    print(f"  HANS validation : {len(ds):,} paires")
+    # MoNLI (OOD)
+    for subset_name, subset_data in monli.items():
+        ds_monli = _NLIPairDataset(subset_data["premise"], subset_data["hypothesis"], subset_data["label"], tokenizer, max_length)
+        evals[f"monli_{subset_name}"] = DataLoader(ds_monli, batch_size=batch_size * 2, shuffle=False,
+                                                   num_workers=n_workers, collate_fn=collate_std,
+                                                   pin_memory=True)
+        print(f"  MoNLI {subset_name} (OOD) : {len(ds_monli):,} paires")
 
-    return evals, hans_loader
-
+    return evals
 
 # =============================================================================
 # 3. Modèle BERT + tête
@@ -319,14 +243,12 @@ class BertNLIModel(nn.Module):
         cls = out.last_hidden_state[:, 0, :]
         return self.classifier(self.dropout(cls))
 
-
 def _get_layer_modules(backbone) -> list:
     if hasattr(backbone, "encoder") and hasattr(backbone.encoder, "layer"):
         return list(backbone.encoder.layer)
     if hasattr(backbone, "transformer") and hasattr(backbone.transformer, "layer"):
         return list(backbone.transformer.layer)
     raise ValueError("Architecture non reconnue.")
-
 
 def freeze_backbone_except_last_n(backbone: nn.Module, n_unfrozen: int = 2):
     for p in backbone.parameters():
@@ -340,7 +262,6 @@ def freeze_backbone_except_last_n(backbone: nn.Module, n_unfrozen: int = 2):
     n_train = sum(p.numel() for p in backbone.parameters() if p.requires_grad)
     print(f"  Backbone : {n_layers} couches, {n_unfrozen} dégelées")
     print(f"  Params   : {n_train:,} / {n_total:,} entraînables ({100*n_train/n_total:.1f}%)")
-
 
 # =============================================================================
 # 4. Évaluation
@@ -363,66 +284,15 @@ def evaluate_loader(model: nn.Module, loader: DataLoader, device: torch.device) 
         total   += len(labels_b)
     return correct / total if total > 0 else 0.0
 
-
-@torch.no_grad()
-def evaluate_hans(
-    model: nn.Module, hans_loader: DataLoader, device: torch.device,
-) -> dict:
-    """
-    Évalue le modèle sur HANS avec mapping 3→2 classes.
-
-    Mapping :
-        pred 0 (entailment)    → 0 (entailment)
-        pred 1 ou 2            → 1 (non_entailment)
-
-    Retourne accuracy globale + par heuristique.
-    """
-    model.eval()
-    preds_all, labels_all, heuristics_all = [], [], []
-
-    for batch in hans_loader:
-        input_ids      = batch["input_ids"].to(device)
-        attention_mask = batch["attention_mask"].to(device)
-        token_type_ids = batch.get("token_type_ids")
-        if token_type_ids is not None:
-            token_type_ids = token_type_ids.to(device)
-        labels_b   = batch["labels"]         # tensor CPU (HANS binary)
-        heuristics = batch["heuristic"]      # liste de strings
-
-        logits = model(input_ids, attention_mask, token_type_ids).cpu()
-        # Mapping 3-class → 2-class
-        preds_3  = logits.argmax(-1)
-        preds_2  = (preds_3 != 0).long()    # 0→0, 1→1, 2→1
-
-        preds_all.extend(preds_2.tolist())
-        labels_all.extend(labels_b.tolist())
-        heuristics_all.extend(heuristics)
-
-    preds_all  = np.array(preds_all)
-    labels_all = np.array(labels_all)
-
-    results = {"hans_overall": float((preds_all == labels_all).mean())}
-
-    for heu in HANS_HEURISTICS:
-        mask = np.array([h == heu for h in heuristics_all])
-        if mask.sum() > 0:
-            results[f"hans_{heu}"] = float((preds_all[mask] == labels_all[mask]).mean())
-
-    return results
-
-
 def evaluate_all(
     model: nn.Module,
     eval_loaders: Dict[str, DataLoader],
-    hans_loader: DataLoader,
     device: torch.device,
 ) -> dict:
     results = {}
     for name, loader in eval_loaders.items():
         results[name] = evaluate_loader(model, loader, device)
-    results.update(evaluate_hans(model, hans_loader, device))
     return results
-
 
 # =============================================================================
 # 5. Fine-tuning ERM
@@ -432,7 +302,6 @@ def finetune_erm(
     model: BertNLIModel,
     env_loaders: Dict[str, DataLoader],
     eval_loaders: Dict[str, DataLoader],
-    hans_loader: DataLoader,
     epochs: int,
     lr_bert: float,
     lr_head: float,
@@ -461,7 +330,7 @@ def finetune_erm(
     use_autocast = "cuda" in str(device)
     scaler = torch.amp.GradScaler(enabled=use_autocast)
     history = []
-    log_steps = 100  # Log loss tous les 100 steps
+    log_steps = 100
 
     print(f"\n  Fine-tuning ERM — {epochs} epochs, {total_steps:,} steps total")
     print(f"  lr_bert={lr_bert}, lr_head={lr_head}")
@@ -513,28 +382,27 @@ def finetune_erm(
             total       += n_samples
             global_step += 1
 
-            # Log loss fréquemment
             if global_step % log_steps == 0:
                 avg_loss = total_loss / (global_step - epoch * steps_per_epoch)
                 print(f"    [ERM] step {global_step:,}/{total_steps:,}  loss={step_loss:.4f} (avg: {avg_loss:.4f})")
 
             if eval_every_steps and global_step % eval_every_steps == 0:
-                res = evaluate_all(model, eval_loaders, hans_loader, device)
+                res = evaluate_all(model, eval_loaders, device)
                 history.append({"step": global_step, "epoch": epoch + 1, "loss": step_loss, **res})
                 step_in_epoch = global_step - epoch * steps_per_epoch
                 print(f"    [ERM] step {global_step:,}  "
                       f"loss={total_loss/max(1, step_in_epoch):.4f}  "
                       f"val_m={res.get('val_matched',0):.4f}  "
                       f"val_mm={res.get('val_mismatched',0):.4f}  "
-                      f"hans={res.get('hans_overall',0):.4f}")
+                      f"pmonli={res.get('monli_pmonli',0):.4f}  "
+                      f"nmonli={res.get('monli_nmonli_test',0):.4f}")
                 model.train()
 
         epoch_loss = total_loss / steps_per_epoch
         epoch_acc  = correct / total if total > 0 else 0
         print(f"  → Epoch {epoch+1}/{epochs}  loss={epoch_loss:.4f}  train_acc={epoch_acc:.4f}")
 
-    return evaluate_all(model, eval_loaders, hans_loader, device), history
-
+    return evaluate_all(model, eval_loaders, device), history
 
 # =============================================================================
 # 6. Fine-tuning IRM
@@ -544,7 +412,6 @@ def finetune_irm(
     model: BertNLIModel,
     env_loaders: Dict[str, DataLoader],
     eval_loaders: Dict[str, DataLoader],
-    hans_loader: DataLoader,
     epochs: int,
     lr_bert: float,
     lr_head: float,
@@ -577,7 +444,7 @@ def finetune_irm(
     use_autocast = "cuda" in str(device)
     scaler = torch.amp.GradScaler(enabled=use_autocast)
     history = []
-    log_steps = 100  # Log loss tous les 100 steps
+    log_steps = 100
     E = len(env_loaders)
 
     print(f"\n  Fine-tuning IRM — {epochs} epochs, {total_steps:,} steps total")
@@ -646,14 +513,13 @@ def finetune_irm(
             step_loss = emp_risk.item()
             global_step   += 1
 
-            # Log loss fréquemment
             if global_step % log_steps == 0:
                 avg_loss = total_loss / (global_step - epoch * steps_per_epoch)
                 avg_penalty = total_penalty / (global_step - epoch * steps_per_epoch)
                 print(f"    [IRM] step {global_step:,}/{total_steps:,}  loss={step_loss:.4f} (avg: {avg_loss:.4f})  pen={avg_penalty:.4f}  λ={lambda_t:.1f}")
 
             if eval_every_steps and global_step % eval_every_steps == 0:
-                res = evaluate_all(model, eval_loaders, hans_loader, device)
+                res = evaluate_all(model, eval_loaders, device)
                 step_in_epoch = global_step - epoch * steps_per_epoch
                 history.append({"step": global_step, "epoch": epoch + 1,
                                  "loss": step_loss, "penalty": total_penalty / max(1, step_in_epoch), **res})
@@ -663,139 +529,64 @@ def finetune_irm(
                       f"λ={lambda_t:.1f}  "
                       f"val_m={res.get('val_matched',0):.4f}  "
                       f"val_mm={res.get('val_mismatched',0):.4f}  "
-                      f"hans={res.get('hans_overall',0):.4f}")
+                      f"pmonli={res.get('monli_pmonli',0):.4f}  "
+                      f"nmonli={res.get('monli_nmonli_test',0):.4f}")
                 model.train()
 
         epoch_loss = total_loss / steps_per_epoch
         epoch_acc  = correct / total if total > 0 else 0
         print(f"  → Epoch {epoch+1}/{epochs}  loss={epoch_loss:.4f}  train_acc={epoch_acc:.4f}")
 
-    return evaluate_all(model, eval_loaders, hans_loader, device), history
-
+    return evaluate_all(model, eval_loaders, device), history
 
 # =============================================================================
 # 7. Visualisation
 # =============================================================================
 
 def plot_comparison(results_erm: dict, results_irm: dict, out_dir: str):
-    """Bar chart ERM vs IRM sur val_matched, val_mismatched et HANS."""
-    sets = ["val_matched", "val_mismatched",
-            "hans_overall", "hans_lexical_overlap", "hans_subsequence", "hans_constituent"]
-    labels = ["Val Matched\n(ID)", "Val Mismatch\n(OOD)",
-              "HANS\nOverall", "HANS\nLex. Overlap", "HANS\nSubsequence", "HANS\nConstituent"]
+    """Bar chart ERM vs IRM sur val_matched, val_mismatched et MoNLI."""
+    sets = ["val_matched", "val_mismatched", "monli_pmonli", "monli_nmonli_test"]
+    labels = ["Val Matched\n(ID)", "Val Mismatch\n(OOD)", "PMoNLI\n(OOD)", "NMoNLI Test\n(OOD)"]
     x = np.arange(len(sets))
-    width = 0.3
+    width = 0.35
 
     erm_accs = [results_erm.get(s, 0) for s in sets]
     irm_accs = [results_irm.get(s, 0) for s in sets]
 
-    fig, ax = plt.subplots(figsize=(14, 5))
+    fig, ax = plt.subplots(figsize=(10, 6))
     ax.bar(x - width / 2, erm_accs, width, label="ERM fine-tune", color="#e74c3c", edgecolor="black")
     ax.bar(x + width / 2, irm_accs, width, label="IRM fine-tune", color="#2ecc71", edgecolor="black")
 
     for i, (e, r) in enumerate(zip(erm_accs, irm_accs)):
-        ax.text(i - width / 2, e + 0.005, f"{e:.3f}", ha="center", fontsize=8)
-        ax.text(i + width / 2, r + 0.005, f"{r:.3f}", ha="center", fontsize=8)
-
-    # Séparateurs ID / OOD / HANS
-    ax.axvline(x=0.5, color="gray", ls="--", alpha=0.5)
-    ax.axvline(x=1.5, color="navy", ls=":", alpha=0.4)
+        ax.text(i - width / 2, e + 0.005, f"{e:.3f}", ha="center", fontsize=10)
+        ax.text(i + width / 2, r + 0.005, f"{r:.3f}", ha="center", fontsize=10)
 
     ax.set_xticks(x)
-    ax.set_xticklabels(labels, fontsize=9)
+    ax.set_xticklabels(labels, fontsize=11)
     ax.set_ylabel("Accuracy")
-    ax.set_title("BERT fine-tuné ERM vs IRM — MNLI ID / mismatched OOD / HANS OOD")
+    ax.set_title(f"BERT fine-tuné ERM vs IRM ({len(TRAIN_GENRES)} genres MNLI)")
     ax.legend()
     ax.set_ylim(0, 1.05)
     ax.grid(axis="y", alpha=0.3)
     plt.tight_layout()
-    plt.savefig(os.path.join(out_dir, "hans_comparison.png"), dpi=150)
+    plt.savefig(os.path.join(out_dir, "monli_comparison.png"), dpi=150)
     plt.close()
-    print(f"  Plot sauvegardé dans {out_dir}/hans_comparison.png")
-
-
-def plot_per_genre(results_erm: dict, results_irm: dict, out_dir: str):
-    """Accuracy par genre (val matched) + mismatched + HANS (OOD)."""
-    genre_keys = [f"val_{g}" for g in TRAIN_GENRES]
-    ood_keys   = ["val_mismatched", "hans_overall"]
-    all_keys   = genre_keys + ood_keys
-    all_labels = TRAIN_GENRES + ["Mismatch", "HANS"]
-
-    erm_accs = [results_erm.get(k, 0) for k in all_keys]
-    irm_accs = [results_irm.get(k, 0) for k in all_keys]
-
-    x = np.arange(len(all_labels))
-    width = 0.35
-
-    fig, ax = plt.subplots(figsize=(12, 5))
-    bars_erm = ax.bar(x - width / 2, erm_accs, width, label="ERM fine-tune",
-                      color="#e74c3c", edgecolor="black", alpha=0.85)
-    bars_irm = ax.bar(x + width / 2, irm_accs, width, label="IRM fine-tune",
-                      color="#2ecc71", edgecolor="black", alpha=0.85)
-
-    for bar, v in zip(bars_erm, erm_accs):
-        ax.text(bar.get_x() + bar.get_width() / 2, v + 0.005, f"{v:.3f}",
-                ha="center", fontsize=8)
-    for bar, v in zip(bars_irm, irm_accs):
-        ax.text(bar.get_x() + bar.get_width() / 2, v + 0.005, f"{v:.3f}",
-                ha="center", fontsize=8)
-
-    ax.axvline(x=len(TRAIN_GENRES) - 0.5, color="gray", ls="--", alpha=0.5)
-    ax.text(len(TRAIN_GENRES) - 0.75, 0.98, "ID ←", ha="right", fontsize=9,
-            color="gray", transform=ax.get_xaxis_transform())
-    ax.text(len(TRAIN_GENRES) - 0.25, 0.98, "→ OOD", ha="left", fontsize=9,
-            color="gray", transform=ax.get_xaxis_transform())
-
-    ax.set_xticks(x)
-    ax.set_xticklabels(all_labels, rotation=15, ha="right")
-    ax.set_ylabel("Accuracy")
-    ax.set_title("BERT fine-tuné — accuracy par genre + HANS (ERM vs IRM)")
-    ax.legend()
-    ax.set_ylim(0, 1.05)
-    ax.grid(axis="y", alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(os.path.join(out_dir, "hans_per_genre.png"), dpi=150)
-    plt.close()
-    print(f"  Per-genre plot sauvegardé dans {out_dir}/hans_per_genre.png")
-
-
-def plot_loss_curves(hist_erm: list, hist_irm: list, out_dir: str):
-    """Traces de la perte pendant le fine-tuning (ERM vs IRM)."""
-    if not hist_erm or not hist_irm:
-        return
-
-    fig, ax = plt.subplots(figsize=(12, 5))
-
-    steps_erm = [h["step"] for h in hist_erm if "loss" in h]
-    loss_erm  = [h["loss"] for h in hist_erm if "loss" in h]
-    steps_irm = [h["step"] for h in hist_irm if "loss" in h]
-    loss_irm  = [h["loss"] for h in hist_irm if "loss" in h]
-
-    ax.plot(steps_erm, loss_erm, label="ERM FT", alpha=0.85, linewidth=2, color="#e74c3c")
-    ax.plot(steps_irm, loss_irm, label="IRM FT", alpha=0.85, linewidth=2, color="#2ecc71")
-
-    ax.set_xlabel("Training Step")
-    ax.set_ylabel("Loss (Cross-Entropy)")
-    ax.set_title("Training Loss — ERM vs IRM FT (BERT on MNLI)")
-    ax.legend(fontsize=11)
-    ax.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(os.path.join(out_dir, "loss_curves.png"), dpi=150)
-    plt.close()
-    print(f"  Loss plot sauvegardé dans {out_dir}/loss_curves.png")
-
+    print(f"  Plot sauvegardé dans {out_dir}/monli_comparison.png")
 
 def plot_training_history(hist_erm: list, hist_irm: list, out_dir: str):
-    """Courbes d'accuracy pendant le fine-tuning."""
+    """Courbes de perte et d'accuracy pendant le fine-tuning."""
     if not hist_erm or not hist_irm:
         return
 
     metrics = [
+        ("loss",           "Training Loss"),
+        ("penalty",        "IRM Penalty"),
         ("val_matched",    "Val Matched (ID)"),
         ("val_mismatched", "Val Mismatched (OOD)"),
-        ("hans_overall",   "HANS Overall (OOD)"),
+        ("monli_pmonli",   "PMoNLI (OOD)"),
+        ("monli_nmonli_test", "NMoNLI Test (OOD)"),
     ]
-    fig, axes = plt.subplots(1, len(metrics), figsize=(18, 5))
+    fig, axes = plt.subplots(1, len(metrics), figsize=(26, 5))
 
     for ax, (key, title) in zip(axes, metrics):
         steps_erm = [h["step"] for h in hist_erm if key in h]
@@ -803,19 +594,26 @@ def plot_training_history(hist_erm: list, hist_irm: list, out_dir: str):
         steps_irm = [h["step"] for h in hist_irm if key in h]
         vals_irm  = [h[key]   for h in hist_irm if key in h]
 
-        ax.plot(steps_erm, vals_erm, label="ERM FT", alpha=0.85, color="C0")
-        ax.plot(steps_irm, vals_irm, label="IRM FT", alpha=0.85, color="C1")
+        if steps_erm:
+            ax.plot(steps_erm, vals_erm, label="ERM FT", alpha=0.85, color="C0")
+        if steps_irm:
+            ax.plot(steps_irm, vals_irm, label="IRM FT", alpha=0.85, color="C1")
+            
         ax.set_xlabel("Step")
-        ax.set_ylabel("Accuracy")
+        if key in ["loss", "penalty"]:
+            ax.set_ylabel("Value")
+        else:
+            ax.set_ylabel("Accuracy")
         ax.set_title(title)
-        ax.legend()
+        
+        if steps_erm or steps_irm:
+            ax.legend()
         ax.grid(True, alpha=0.3)
 
     plt.tight_layout()
-    plt.savefig(os.path.join(out_dir, "hans_curves.png"), dpi=150)
+    plt.savefig(os.path.join(out_dir, "monli_curves.png"), dpi=150)
     plt.close()
-    print(f"  Courbes sauvegardées dans {out_dir}/hans_curves.png")
-
+    print(f"  Courbes sauvegardées dans {out_dir}/monli_curves.png")
 
 # =============================================================================
 # MAIN
@@ -823,7 +621,7 @@ def plot_training_history(hist_erm: list, hist_irm: list, out_dir: str):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Fine-tune BERT ERM vs IRM sur MNLI, évaluation HANS"
+        description="Fine-tune BERT ERM vs IRM sur MNLI (2 genres), eval MoNLI"
     )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="auto")
@@ -831,16 +629,16 @@ def main():
     parser.add_argument("--max_length", type=int, default=256)
 
     # Fine-tuning
-    parser.add_argument("--epochs", type=int, default=3)
-    parser.add_argument("--batch_size", type=int, default=16,
+    parser.add_argument("--epochs", type=int, default=4)
+    parser.add_argument("--batch_size", type=int, default=32,
                         help="Batch size par env.")
     parser.add_argument("--lr_bert", type=float, default=2e-5)
     parser.add_argument("--lr_head", type=float, default=1e-3)
-    parser.add_argument("--n_unfrozen_layers", type=int, default=2,
+    parser.add_argument("--n_unfrozen_layers", type=int, default=1,
                         help="Nombre de couches Transformer à dégeler.")
 
     # IRM
-    parser.add_argument("--irm_lambda", type=float, default=100.0)
+    parser.add_argument("--irm_lambda", type=float, default=10.0)
     parser.add_argument("--warmup_fraction", type=float, default=0.1)
 
     # Évaluation
@@ -848,7 +646,7 @@ def main():
 
     # Output
     parser.add_argument("--out_dir", type=str,
-                        default=str(_Path(__file__).parent / "plots_hans"))
+                        default=str(_Path(__file__).parent / "plots_monli"))
 
     args = parser.parse_args()
     device = torch.device(resolve_device(args.device))
@@ -856,13 +654,11 @@ def main():
     torch.manual_seed(args.seed)
     n_classes = 3
 
-    # ─────────────────────────────────────────────────────────────────────
     print("\n" + "=" * 70)
     print("ÉTAPE 1 : Chargement des datasets")
     print("=" * 70)
-    mnli, snli, hans = load_all_datasets()
+    mnli, monli = load_all_datasets()
 
-    # ─────────────────────────────────────────────────────────────────────
     print("\n" + "=" * 70)
     print("ÉTAPE 2 : Construction des DataLoaders")
     print("=" * 70)
@@ -870,18 +666,35 @@ def main():
 
     tokenizer = AutoTokenizer.from_pretrained(args.bert_model)
 
-    print("\nEnvironnements d'entraînement (MNLI, 5 genres + SNLI) :")
-    env_loaders = build_env_loaders(mnli, snli, tokenizer, args.max_length, args.batch_size)
+    print(f"\nEnvironnements d'entraînement (MNLI, {len(TRAIN_GENRES)} genres) :")
+    env_loaders = build_env_loaders(mnli, tokenizer, args.max_length, args.batch_size)
 
     print("\nSets d'évaluation :")
-    eval_loaders, hans_loader = build_eval_loaders(
-        mnli, hans, tokenizer, args.max_length, batch_size=args.batch_size * 4,
+    eval_loaders = build_eval_loaders(
+        mnli, monli, tokenizer, args.max_length, batch_size=args.batch_size * 4,
     )
     for name, loader in eval_loaders.items():
-        if not name.startswith("val_") or name in ("val_matched", "val_mismatched"):
+        if not name.startswith("val_") or name in ("val_matched", "val_mismatched", "monli_pmonli", "monli_nmonli_test"):
             print(f"  {name:20s} : {len(loader.dataset):,} paires")
 
-    # ─────────────────────────────────────────────────────────────────────
+    print("\n" + "=" * 70)
+    print("ÉTAPE 3 : Fine-tuning ERM (baseline)")
+    print("=" * 70)
+
+    torch.manual_seed(args.seed)
+    backbone_erm = AutoModel.from_pretrained(args.bert_model)
+    model_erm    = BertNLIModel(backbone_erm, backbone_erm.config.hidden_size, n_classes).to(device)
+    freeze_backbone_except_last_n(model_erm.backbone, args.n_unfrozen_layers)
+
+    results_erm, hist_erm = finetune_erm(
+        model_erm, env_loaders, eval_loaders,
+        epochs=args.epochs,
+        lr_bert=args.lr_bert,
+        lr_head=args.lr_head,
+        device=device,
+        eval_every_steps=args.eval_every,
+    )
+    
     print("\n" + "=" * 70)
     print("ÉTAPE 4 : Fine-tuning IRM")
     print("=" * 70)
@@ -892,7 +705,7 @@ def main():
     freeze_backbone_except_last_n(model_irm.backbone, args.n_unfrozen_layers)
 
     results_irm, hist_irm = finetune_irm(
-        model_irm, env_loaders, eval_loaders, hans_loader,
+        model_irm, env_loaders, eval_loaders,
         epochs=args.epochs,
         lr_bert=args.lr_bert,
         lr_head=args.lr_head,
@@ -902,32 +715,12 @@ def main():
         eval_every_steps=args.eval_every,
     )
 
-    # ─────────────────────────────────────────────────────────────────────
-    print("\n" + "=" * 70)
-    print("ÉTAPE 3 : Fine-tuning ERM (baseline)")
-    print("=" * 70)
-
-    backbone_erm = AutoModel.from_pretrained(args.bert_model)
-    model_erm    = BertNLIModel(backbone_erm, backbone_erm.config.hidden_size, n_classes).to(device)
-    freeze_backbone_except_last_n(model_erm.backbone, args.n_unfrozen_layers)
-
-    results_erm, hist_erm = finetune_erm(
-        model_erm, env_loaders, eval_loaders, hans_loader,
-        epochs=args.epochs,
-        lr_bert=args.lr_bert,
-        lr_head=args.lr_head,
-        device=device,
-        eval_every_steps=args.eval_every,
-    )
-
-    # ─────────────────────────────────────────────────────────────────────
     print("\n" + "=" * 70)
     print("ÉTAPE 5 : Résultats")
     print("=" * 70)
 
-    header_keys   = ["val_matched", "val_mismatched",
-                     "hans_overall", "hans_lexical_overlap", "hans_subsequence", "hans_constituent"]
-    header_labels = ["Val ID", "Mismatch", "HANS All", "HANS Lex.", "HANS Subseq.", "HANS Const."]
+    header_keys   = ["val_matched", "val_mismatched", "monli_pmonli", "monli_nmonli_test"]
+    header_labels = ["Val ID", "Mismatch", "PMoNLI", "NMoNLI"]
 
     print(f"\n  {'':12s}  " + "  ".join(f"{h:>10s}" for h in header_labels))
     print(f"  {'':12s}  " + "  ".join("─" * 10 for _ in header_labels))
@@ -945,15 +738,12 @@ def main():
         json.dump(all_results, f, indent=2)
     print(f"\n  Résultats sauvegardés dans {args.out_dir}/results.json")
 
-    # ─────────────────────────────────────────────────────────────────────
     print("\n" + "=" * 70)
     print("ÉTAPE 6 : Plots")
     print("=" * 70)
 
     plot_comparison(results_erm, results_irm, args.out_dir)
-    plot_per_genre(results_erm, results_irm, args.out_dir)
     plot_training_history(hist_erm, hist_irm, args.out_dir)
-    plot_loss_curves(hist_erm, hist_irm, args.out_dir)
 
     print("\n✓ Terminé.")
 
