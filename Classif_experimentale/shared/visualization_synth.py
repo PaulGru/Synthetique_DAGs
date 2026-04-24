@@ -327,6 +327,45 @@ def plot_summary_panel(erm_hist, irm_hist, filename, dataset_name=''):
     plt.close()
 
 
+def plot_results_table(erm_hist, irm_hist, filename):
+    """Standalone metrics table (no title, no bar chart) — for direct inclusion in papers."""
+    split_keys = [('Val (ID)',    'val_acc'),
+                  ('Test (OOD)', 'test_acc')]
+
+    rows_data   = []
+    rows_labels = []
+    for split_label, hist_key in split_keys:
+        e_vals = erm_hist[hist_key]
+        i_vals = irm_hist[hist_key]
+        e_fin  = e_vals[-1] if e_vals else float('nan')
+        i_fin  = i_vals[-1] if i_vals else float('nan')
+        delta  = i_fin - e_fin
+        rows_data.append([f'{e_fin:.4f}', f'{i_fin:.4f}', f'{delta:+.4f}'])
+        rows_labels.append(split_label)
+
+    col_labels = ['ERM', 'IRM', '\u0394 (IRM\u2212ERM)']
+
+    fig, ax = plt.subplots(figsize=(5.5, 1.6))
+    ax.axis('off')
+
+    tbl = ax.table(
+        cellText=rows_data, rowLabels=rows_labels,
+        colLabels=col_labels, loc='center', cellLoc='center',
+    )
+    tbl.auto_set_font_size(False)
+    tbl.set_fontsize(10)
+    tbl.scale(1.0, 2.4)
+    for row_idx, row_vals in enumerate(rows_data, start=1):
+        delta_val = float(row_vals[-1])
+        cell = tbl[row_idx, len(col_labels) - 1]
+        cell.set_facecolor('#d4edda' if delta_val >  0.005 else
+                           '#f8d7da' if delta_val < -0.005 else '#fff3cd')
+
+    plt.tight_layout()
+    _save_fig(filename)
+    plt.close()
+
+
 # ─── Main entry point ─────────────────────────────────────────────────────────
 
 def generate_all_plots(erm_hist, irm_hist, erm_model, irm_model,

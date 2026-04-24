@@ -30,6 +30,7 @@ from visualization_synth import (
     plot_accuracy_curves,
     plot_loss_curves,
     plot_summary_panel,
+    plot_results_table,
 )
 import warnings
 warnings.filterwarnings('ignore')
@@ -241,4 +242,8 @@ if __name__ == '__main__':
     plot_summary_panel(
         erm_hist, irm_hist,
         os.path.join(plot_dir, '05_summary.png'), args.dataset,
+    )
+    plot_results_table(
+        erm_hist, irm_hist,
+        os.path.join(plot_dir, '06_results.png'),
     )

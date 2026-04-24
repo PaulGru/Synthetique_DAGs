@@ -307,10 +307,10 @@ SST2_CONF_PROXY_A_TRAIN  ?= 0.01 0.1
 SST2_CONF_PROXY_A_TEST   ?= 1.0
 SST2_CONF_PROXY_P_C_FLIP ?= 0.25
 SST2_CONF_ERM_STEPS      ?= 25000
-SST2_CONF_ERM_LR         ?= 5e-4
+SST2_CONF_ERM_LR         ?= 1e-4
 SST2_CONF_IRM_STEPS      ?= 25000
-SST2_CONF_IRM_LR         ?= 5e-4
-SST2_CONF_IRM_LAMBDA     ?= 150.0
+SST2_CONF_IRM_LR         ?= 1e-4
+SST2_CONF_IRM_LAMBDA     ?= 100.0
 
 nlp_sst2_conf_varying_proxy:
 	cd $(ROOT) && $(PYTHON) nlp_synthetic/main_nlp.py \
@@ -328,7 +328,7 @@ nlp_sst2_conf_varying_proxy:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-all_conf: nlp_sms_spam_conf_varying_proxy nlp_agnews_conf_varying_proxy nlp_sst2_conf_varying_proxy
+all_conf: nlp_sst2_conf_varying_proxy nlp_agnews_conf_varying_proxy nlp_sms_spam_conf_varying_proxy
 all_selection: nlp_sms_spam_size_selection nlp_sst2_selection nlp_agnews_source_selection
 all_sac: nlp_sms_spam_semi_anti_causal nlp_agnews_semi_anti_causal nlp_sst2_semi_anti_causal
 

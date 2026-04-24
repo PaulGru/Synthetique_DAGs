@@ -836,7 +836,7 @@ def main():
                         help="Batch size par env.")
     parser.add_argument("--lr_bert", type=float, default=2e-5)
     parser.add_argument("--lr_head", type=float, default=1e-3)
-    parser.add_argument("--n_unfrozen_layers", type=int, default=2,
+    parser.add_argument("--n_unfrozen_layers", type=int, default=3,
                         help="Nombre de couches Transformer à dégeler.")
 
     # IRM

@@ -306,7 +306,7 @@ def finetune_erm(
     lr_bert: float,
     lr_head: float,
     device: torch.device,
-    eval_every_steps: int = 500,
+    eval_every_steps: int = 100,
 ) -> Tuple[dict, list]:
     """Fine-tune ERM : cross-entropie poolée sur tous les envs."""
     from transformers import get_linear_schedule_with_warmup
@@ -418,7 +418,7 @@ def finetune_irm(
     irm_lambda: float,
     warmup_fraction: float,
     device: torch.device,
-    eval_every_steps: int = 500,
+    eval_every_steps: int = 100,
 ) -> Tuple[dict, list]:
     """Fine-tune IRMv1 : 1 mini-batch par env, loss ERM + λ·pénalité."""
     from transformers import get_linear_schedule_with_warmup
@@ -432,7 +432,6 @@ def finetune_irm(
 
     steps_per_epoch = max(len(loader) for loader in env_loaders.values())
     total_steps     = epochs * steps_per_epoch
-    warmup_steps    = int(warmup_fraction * total_steps)
 
     scheduler = get_linear_schedule_with_warmup(
         optimizer,
@@ -448,8 +447,7 @@ def finetune_irm(
     E = len(env_loaders)
 
     print(f"\n  Fine-tuning IRM — {epochs} epochs, {total_steps:,} steps total")
-    print(f"  lr_bert={lr_bert}, lr_head={lr_head}, λ_max={irm_lambda}")
-    print(f"  warmup: {warmup_steps:,} steps ({warmup_fraction*100:.0f}%)")
+    print(f"  lr_bert={lr_bert}, lr_head={lr_head}, λ={irm_lambda}")
 
     global_step = 0
     step_loss = 0.0
@@ -495,7 +493,7 @@ def finetune_irm(
             emp_risk = emp_risk / E
             penalty  = torch.stack(penalties).mean()
 
-            lambda_t = irm_lambda * min(1.0, global_step / max(1, warmup_steps))
+            lambda_t = irm_lambda
             objective = emp_risk + lambda_t * penalty
             if lambda_t > 1.0:
                 objective = objective / lambda_t
@@ -629,16 +627,16 @@ def main():
     parser.add_argument("--max_length", type=int, default=256)
 
     # Fine-tuning
-    parser.add_argument("--epochs", type=int, default=4)
+    parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--batch_size", type=int, default=32,
                         help="Batch size par env.")
     parser.add_argument("--lr_bert", type=float, default=2e-5)
     parser.add_argument("--lr_head", type=float, default=1e-3)
-    parser.add_argument("--n_unfrozen_layers", type=int, default=1,
+    parser.add_argument("--n_unfrozen_layers", type=int, default=4,
                         help="Nombre de couches Transformer à dégeler.")
 
     # IRM
-    parser.add_argument("--irm_lambda", type=float, default=10.0)
+    parser.add_argument("--irm_lambda", type=float, default=15.0)
     parser.add_argument("--warmup_fraction", type=float, default=0.1)
 
     # Évaluation
@@ -676,24 +674,6 @@ def main():
     for name, loader in eval_loaders.items():
         if not name.startswith("val_") or name in ("val_matched", "val_mismatched", "monli_pmonli", "monli_nmonli_test"):
             print(f"  {name:20s} : {len(loader.dataset):,} paires")
-
-    print("\n" + "=" * 70)
-    print("ÉTAPE 3 : Fine-tuning ERM (baseline)")
-    print("=" * 70)
-
-    torch.manual_seed(args.seed)
-    backbone_erm = AutoModel.from_pretrained(args.bert_model)
-    model_erm    = BertNLIModel(backbone_erm, backbone_erm.config.hidden_size, n_classes).to(device)
-    freeze_backbone_except_last_n(model_erm.backbone, args.n_unfrozen_layers)
-
-    results_erm, hist_erm = finetune_erm(
-        model_erm, env_loaders, eval_loaders,
-        epochs=args.epochs,
-        lr_bert=args.lr_bert,
-        lr_head=args.lr_head,
-        device=device,
-        eval_every_steps=args.eval_every,
-    )
     
     print("\n" + "=" * 70)
     print("ÉTAPE 4 : Fine-tuning IRM")
@@ -711,6 +691,24 @@ def main():
         lr_head=args.lr_head,
         irm_lambda=args.irm_lambda,
         warmup_fraction=args.warmup_fraction,
+        device=device,
+        eval_every_steps=args.eval_every,
+    )
+    
+    print("\n" + "=" * 70)
+    print("ÉTAPE 3 : Fine-tuning ERM (baseline)")
+    print("=" * 70)
+
+    torch.manual_seed(args.seed)
+    backbone_erm = AutoModel.from_pretrained(args.bert_model)
+    model_erm    = BertNLIModel(backbone_erm, backbone_erm.config.hidden_size, n_classes).to(device)
+    freeze_backbone_except_last_n(model_erm.backbone, args.n_unfrozen_layers)
+
+    results_erm, hist_erm = finetune_erm(
+        model_erm, env_loaders, eval_loaders,
+        epochs=args.epochs,
+        lr_bert=args.lr_bert,
+        lr_head=args.lr_head,
         device=device,
         eval_every_steps=args.eval_every,
     )

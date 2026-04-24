@@ -696,7 +696,8 @@ def build_envs_nlp_conf_varying_proxy(
     Nt = rng_t.binomial(1, a_test, size=len(test_labels))
     Zt = np.logical_xor(Ct, Nt).astype(int)
     X_test, Y_test = _conf_make_env(test_texts, test_labels, Ct, Zt, 1.0, rng_t,
-                                    bert_model, max_length, device, pooling)
+                                    bert_model, max_length, device, pooling,
+                                    apply_gamma=False)
     test_env = Env(torch.from_numpy(X_test), torch.from_numpy(Y_test),
                    meta={"kind": "nlp_conf_varying_proxy", "a": a_test, "p_c_flip": p_c_flip,
                          "split": "test_ood", "n_samples": len(X_test)})
@@ -2713,8 +2714,9 @@ def build_envs_sst2_conf_varying_proxy(
 
         rng_e = np.random.default_rng(seed + i * 7)
         C = rng_e.binomial(1, p_c_flip, size=len(labels))
+        Y_obs = np.where(C == 1, 1 - labels, labels).astype(int)
         N = rng_e.binomial(1, a_e,  size=len(labels))
-        Z = np.logical_xor(C, N).astype(int)
+        Z = np.logical_xor(Y_obs, N).astype(int)
 
         X, Y = _conf_make_env(
             texts, labels.astype(np.float32), C, Z, 1.0, rng_e,
@@ -2730,8 +2732,9 @@ def build_envs_sst2_conf_varying_proxy(
         val_labels = all_labels_arr[val_idx]
         rng_v = np.random.default_rng(seed + 5000 + i)
         Cv = rng_v.binomial(1, p_c_flip, size=len(val_labels))
+        Y_obs_v = np.where(Cv == 1, 1 - val_labels, val_labels).astype(int)
         Nv = rng_v.binomial(1, a_e,  size=len(val_labels))
-        Zv = np.logical_xor(Cv, Nv).astype(int)
+        Zv = np.logical_xor(Y_obs_v, Nv).astype(int)
         X_val, Y_val = _conf_make_env(
             val_texts, val_labels.astype(np.float32), Cv, Zv, 1.0, rng_v,
             bert_model, max_length, device, pooling,
@@ -2746,8 +2749,9 @@ def build_envs_sst2_conf_varying_proxy(
     test_labels = all_labels_arr[test_idx]
     rng_t = np.random.default_rng(seed + 777)
     Ct = rng_t.binomial(1, p_c_flip, size=len(test_labels))
+    Y_obs_t = np.where(Ct == 1, 1 - test_labels, test_labels).astype(int)
     Nt = rng_t.binomial(1, a_test, size=len(test_labels))
-    Zt = np.logical_xor(Ct, Nt).astype(int)
+    Zt = np.logical_xor(Y_obs_t, Nt).astype(int)
     X_test, Y_test = _conf_make_env(
         test_texts, test_labels.astype(np.float32), Ct, Zt, 1.0, rng_t,
         bert_model, max_length, device, pooling,
