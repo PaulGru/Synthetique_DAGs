@@ -403,10 +403,25 @@ def evaluate_hans(
 
     results = {"hans_overall": float((preds_all == labels_all).mean())}
 
+    # Accuracy globale par label
+    for lbl, lbl_name in [(0, "entailed"), (1, "non_entailed")]:
+        mask_lbl = labels_all == lbl
+        if mask_lbl.sum() > 0:
+            results[f"hans_{lbl_name}"] = float(
+                (preds_all[mask_lbl] == labels_all[mask_lbl]).mean()
+            )
+
+    # Accuracy par heuristique (globale + par label)
     for heu in HANS_HEURISTICS:
-        mask = np.array([h == heu for h in heuristics_all])
-        if mask.sum() > 0:
-            results[f"hans_{heu}"] = float((preds_all[mask] == labels_all[mask]).mean())
+        mask_heu = np.array([h == heu for h in heuristics_all])
+        if mask_heu.sum() > 0:
+            results[f"hans_{heu}"] = float((preds_all[mask_heu] == labels_all[mask_heu]).mean())
+            for lbl, lbl_name in [(0, "entailed"), (1, "non_entailed")]:
+                mask = mask_heu & (labels_all == lbl)
+                if mask.sum() > 0:
+                    results[f"hans_{heu}_{lbl_name}"] = float(
+                        (preds_all[mask] == labels_all[mask]).mean()
+                    )
 
     return results
 
@@ -759,6 +774,58 @@ def plot_per_genre(results_erm: dict, results_irm: dict, out_dir: str):
     print(f"  Per-genre plot sauvegardé dans {out_dir}/hans_per_genre.png")
 
 
+def plot_hans_entailed_breakdown(results_erm: dict, results_irm: dict, out_dir: str):
+    """
+    Reproduit la figure de McCoy et al. (2019) :
+    grille 3 colonnes (heuristiques) × 2 lignes (Entailed / Non-entailed),
+    avec ERM et IRM côte à côte (comme DA, ESIM, … dans l'article).
+    """
+    heuristics  = ["lexical_overlap", "subsequence", "constituent"]
+    heu_labels  = ["Lexical overlap", "Subsequence", "Constituent"]
+    lbl_names   = ["entailed", "non_entailed"]
+    row_labels  = ["Entailed", "Non-entailed"]
+
+    fig, axes = plt.subplots(2, 3, figsize=(12, 7), sharey=False)
+    fig.suptitle("HANS — Accuracy par heuristique et label (ERM vs IRM)", fontsize=13)
+
+    colors = {"ERM": "#e74c3c", "IRM": "#2ecc71"}
+    x = np.arange(2)  # 2 modèles
+    width = 0.5
+
+    for col, (heu, heu_lbl) in enumerate(zip(heuristics, heu_labels)):
+        for row, (lbl, row_lbl) in enumerate(zip(lbl_names, row_labels)):
+            ax = axes[row][col]
+            key = f"hans_{heu}_{lbl}"
+            vals = [
+                results_erm.get(key, 0) * 100,
+                results_irm.get(key, 0) * 100,
+            ]
+            bars = ax.bar(x, vals, width, color=[colors["ERM"], colors["IRM"]],
+                          edgecolor="black", alpha=0.85)
+            for bar, v in zip(bars, vals):
+                ax.text(bar.get_x() + bar.get_width() / 2, v + 1.5,
+                        f"{v:.1f}%", ha="center", fontsize=9)
+
+            ax.axhline(50, color="black", ls="--", lw=1)
+            ax.set_ylim(0, 110)
+            ax.set_xticks(x)
+            ax.set_xticklabels(["ERM", "IRM"], fontsize=10)
+            ax.set_ylabel("Accuracy" if col == 0 else "")
+            ax.grid(axis="y", alpha=0.3)
+
+            if row == 0:
+                ax.set_title(heu_lbl, fontsize=11)
+            # Étiquette de ligne à droite
+            if col == 2:
+                ax.yaxis.set_label_position("right")
+                ax.set_ylabel(row_lbl, rotation=270, labelpad=15, fontsize=10)
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(out_dir, "hans_entailed_breakdown.png"), dpi=150)
+    plt.close()
+    print(f"  Hans breakdown plot sauvegardé dans {out_dir}/hans_entailed_breakdown.png")
+
+
 def plot_loss_curves(hist_erm: list, hist_irm: list, out_dir: str):
     """Traces de la perte pendant le fine-tuning (ERM vs IRM)."""
     if not hist_erm or not hist_irm:
@@ -836,11 +903,11 @@ def main():
                         help="Batch size par env.")
     parser.add_argument("--lr_bert", type=float, default=2e-5)
     parser.add_argument("--lr_head", type=float, default=1e-3)
-    parser.add_argument("--n_unfrozen_layers", type=int, default=3,
+    parser.add_argument("--n_unfrozen_layers", type=int, default=5,
                         help="Nombre de couches Transformer à dégeler.")
 
     # IRM
-    parser.add_argument("--irm_lambda", type=float, default=100.0)
+    parser.add_argument("--irm_lambda", type=float, default=10.0)
     parser.add_argument("--warmup_fraction", type=float, default=0.1)
 
     # Évaluation
@@ -935,6 +1002,14 @@ def main():
         vals = [f"{res.get(k, 0):10.4f}" for k in header_keys]
         print(f"  {name:12s}  " + "  ".join(vals))
 
+    print("\n  Détail Entailed / Non-entailed par heuristique HANS :")
+    heuristics = ["lexical_overlap", "subsequence", "constituent"]
+    for lbl_name in ["entailed", "non_entailed"]:
+        print(f"\n    [{lbl_name}]")
+        for heu in heuristics:
+            k = f"hans_{heu}_{lbl_name}"
+            print(f"      {heu:20s}  ERM={results_erm.get(k, 0):.4f}  IRM={results_irm.get(k, 0):.4f}")
+
     print("\n  Détail par genre (val_matched) :")
     for g in TRAIN_GENRES:
         k = f"val_{g}"
@@ -952,6 +1027,7 @@ def main():
 
     plot_comparison(results_erm, results_irm, args.out_dir)
     plot_per_genre(results_erm, results_irm, args.out_dir)
+    plot_hans_entailed_breakdown(results_erm, results_irm, args.out_dir)
     plot_training_history(hist_erm, hist_irm, args.out_dir)
     plot_loss_curves(hist_erm, hist_irm, args.out_dir)
 

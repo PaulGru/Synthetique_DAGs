@@ -2714,9 +2714,8 @@ def build_envs_sst2_conf_varying_proxy(
 
         rng_e = np.random.default_rng(seed + i * 7)
         C = rng_e.binomial(1, p_c_flip, size=len(labels))
-        Y_obs = np.where(C == 1, 1 - labels, labels).astype(int)
         N = rng_e.binomial(1, a_e,  size=len(labels))
-        Z = np.logical_xor(Y_obs, N).astype(int)
+        Z = np.logical_xor(C, N).astype(int)
 
         X, Y = _conf_make_env(
             texts, labels.astype(np.float32), C, Z, 1.0, rng_e,
@@ -2732,9 +2731,8 @@ def build_envs_sst2_conf_varying_proxy(
         val_labels = all_labels_arr[val_idx]
         rng_v = np.random.default_rng(seed + 5000 + i)
         Cv = rng_v.binomial(1, p_c_flip, size=len(val_labels))
-        Y_obs_v = np.where(Cv == 1, 1 - val_labels, val_labels).astype(int)
         Nv = rng_v.binomial(1, a_e,  size=len(val_labels))
-        Zv = np.logical_xor(Y_obs_v, Nv).astype(int)
+        Zv = np.logical_xor(Cv, Nv).astype(int)
         X_val, Y_val = _conf_make_env(
             val_texts, val_labels.astype(np.float32), Cv, Zv, 1.0, rng_v,
             bert_model, max_length, device, pooling,
@@ -2749,9 +2747,8 @@ def build_envs_sst2_conf_varying_proxy(
     test_labels = all_labels_arr[test_idx]
     rng_t = np.random.default_rng(seed + 777)
     Ct = rng_t.binomial(1, p_c_flip, size=len(test_labels))
-    Y_obs_t = np.where(Ct == 1, 1 - test_labels, test_labels).astype(int)
     Nt = rng_t.binomial(1, a_test, size=len(test_labels))
-    Zt = np.logical_xor(Y_obs_t, Nt).astype(int)
+    Zt = np.logical_xor(Ct, Nt).astype(int)
     X_test, Y_test = _conf_make_env(
         test_texts, test_labels.astype(np.float32), Ct, Zt, 1.0, rng_t,
         bert_model, max_length, device, pooling,
@@ -2764,4 +2761,1781 @@ def build_envs_sst2_conf_varying_proxy(
     print(f"\n✅ SST-2 Confounding varying proxy — Done!")
     print(f"   Train : {sum(e.X.shape[0] for e in train_envs)} | "
           f"Val : {val_envs[0].X.shape[0]} | Test : {test_env.X.shape[0]}")
+    return train_envs, val_envs, test_env
+
+
+# =============================================================================
+# IMDB — Dataset ANTI-CAUSAL (Y → X : sentiment → texte)
+# =============================================================================
+# stanfordnlp/imdb : 25 000 critiques de films en train, 25 000 en test.
+# Labels : 0 = négatif, 1 = positif.
+# Comme SST-2, c'est un dataset ANTI-CAUSAL : le sentiment du critique (Y)
+# cause ce qu'il écrit (X). Mais les textes sont beaucoup plus longs (~230 mots
+# en moyenne vs ~20 pour SST-2), ce qui donne plus de signal causal à BERT.
+# On utilise train+test pour avoir ~50 000 exemples, puis on re-splitte 80/10/10.
+# Tokens spurieux : "sky" (négatif) et "fire" (positif) — mêmes tokens que SMS
+# Spam (sémantiquement neutres par rapport au sentiment), injectés via
+# _prepend_token_to_neutral_words pour distribuer le signal dans le texte.
+# =============================================================================
+
+IMDB_CLASS_NAMES: Dict[int, str] = {0: "negative", 1: "positive"}
+
+# Tokens spurieux pour IMDB — mêmes que SMS Spam, sémantiquement neutres
+# pour le sentiment dans les corpus de pré-entraînement BERT.
+IMDB_TOKENS: Dict[int, str] = {
+    0: "sky",    # négatif
+    1: "fire",   # positif
+}
+
+_IMDB_CONF_TOKENS: Dict[str, str] = {
+    "ham_correlated":  "sky",    # label 0 = négatif
+    "spam_correlated": "fire",   # label 1 = positif
+}
+
+# Mots de sentiment pour le biais de sélection IMDB.
+# Les critiques CONTENANT ces mots sont les "cas typiques" (train/val),
+# les autres constituent le pool de test OOD.
+# Listes identiques à SST-2 car les deux datasets sont des critiques de films.
+IMDB_POSITIVE_WORDS: List[str] = [
+    "good", "great", "best", "love", "loved", "enjoy", "enjoyed",
+    "like", "liked", "nice", "fine", "solid", "strong", "smart",
+    "funny", "fun", "sweet", "clever", "witty", "sharp", "rich",
+    "moving", "touching", "emotional", "heartfelt", "warm", "tender",
+    "beautiful", "gorgeous", "stunning", "striking", "vivid",
+    "compelling", "engaging", "absorbing", "gripping", "riveting",
+    "entertaining", "enjoyable", "satisfying", "rewarding", "pleasing",
+    "wonderful", "excellent", "brilliant", "outstanding", "perfect",
+    "masterpiece", "superb", "terrific", "magnificent", "exceptional",
+    "charming", "delightful", "remarkable", "unforgettable", "inspired",
+    "breathtaking", "glorious", "spectacular", "phenomenal",
+    "extraordinary", "exquisite", "thrilling", "uplifting", "hilarious",
+    "powerful", "refreshing", "impressive", "interesting", "intriguing",
+    "must see", "must-see", "highly recommended", "worth watching",
+    "well done", "well-done", "well made", "well-made",
+]
+IMDB_NEGATIVE_WORDS: List[str] = [
+    "bad", "worst", "poor", "weak", "flat", "dull", "slow", "bland",
+    "boring", "tired", "stale", "thin", "cheap", "hollow", "empty",
+    "mess", "failure", "fail", "fails", "failed",
+    "stupid", "silly", "lame", "clumsy", "lazy", "sloppy",
+    "predictable", "formulaic", "clichéd", "cliched", "derivative",
+    "contrived", "forced", "unconvincing", "uninteresting", "tedious",
+    "forgettable", "pointless", "aimless", "incoherent", "confusing",
+    "annoying", "irritating", "painful", "unwatchable", "unbearable",
+    "terrible", "awful", "horrible", "dreadful", "pathetic",
+    "disappointing", "atrocious", "abysmal", "ridiculous", "laughable",
+    "pretentious", "insufferable", "excruciating", "soulless", "joyless",
+    "vapid", "shallow", "lifeless", "numbing",
+    "complete waste", "waste of time", "don't bother", "avoid",
+    "fell flat", "falls flat", "doesn't work",
+]
+
+
+# =============================================================================
+# IMDB — helper : sous-échantillonnage pour déséquilibre de classes
+# =============================================================================
+
+def _subsample_to_ratio(
+    texts: List[str],
+    labels: np.ndarray,
+    target_ratio: float,
+    rng: np.random.Generator,
+) -> Tuple[List[str], np.ndarray]:
+    """
+    Sous-échantillonne (texts, labels) pour que P(Y=1) ≈ target_ratio.
+
+    Garde tous les exemples de la classe minoritaire cible et sous-échantillonne
+    la classe majoritaire.  Le résultat est permuté aléatoirement.
+
+    Parameters
+    ----------
+    target_ratio : float  Fraction souhaitée de positifs (ex : 0.2 ou 0.8).
+    """
+    pos_idx = np.where(labels == 1)[0]
+    neg_idx = np.where(labels == 0)[0]
+    n_pos, n_neg = len(pos_idx), len(neg_idx)
+
+    if target_ratio >= 0.5:
+        # Positifs majoritaires → garder tous les positifs, sous-échantillonner négatifs
+        n_neg_keep = int(n_pos * (1.0 - target_ratio) / target_ratio)
+        n_neg_keep = min(n_neg_keep, n_neg)
+        neg_kept = rng.choice(neg_idx, size=n_neg_keep, replace=False)
+        pos_kept = pos_idx
+    else:
+        # Négatifs majoritaires → garder tous les négatifs, sous-échantillonner positifs
+        n_pos_keep = int(n_neg * target_ratio / (1.0 - target_ratio))
+        n_pos_keep = min(n_pos_keep, n_pos)
+        pos_kept = rng.choice(pos_idx, size=n_pos_keep, replace=False)
+        neg_kept = neg_idx
+
+    kept = rng.permutation(np.concatenate([pos_kept, neg_kept]))
+    texts_out  = [texts[int(j)]  for j in kept]
+    labels_out = labels[kept]
+    actual_ratio = float(labels_out.mean())
+    print(f"  Sous-échantillonnage → {len(kept)} reviews  "
+          f"(positifs : {actual_ratio:.1%}, cible : {target_ratio:.0%})")
+    return texts_out, labels_out
+
+
+# =============================================================================
+# IMDB — 1) Semi anti-causal : injection de token spurieux
+# =============================================================================
+
+def build_envs_imdb_semi_anti_causal(
+    train_p_correct: List[float],
+    test_p_correct: float,
+    seed: int,
+    label_flip: float = 0.0,
+    bert_model: str = "bert-base-uncased",
+    max_length: int = 512,
+    device: str = "cpu",
+    pooling: str = "mean",
+    class_ratio_train: Optional[List[float]] = None,
+    class_ratio_test: Optional[float] = None,
+) -> Tuple[List[Env], List[Env], Env]:
+    """
+    IMDB — expérience semi anti-causale par injection de token spurieux.
+
+    DAG : Y → X_z  ET  Y → Z = token(Y, p_correct) → X total
+    Variation d'env : force de corrélation Z–Y (p_correct).
+
+    Parameters
+    ----------
+    train_p_correct  : List[float]          Corrélation Z–Y par env train (ex : [0.9, 0.8]).
+    test_p_correct   : float                Corrélation en test OOD (souvent 0.0).
+    label_flip       : float                Fraction de labels bruités en train.
+    max_length       : int                  Max tokens BERT (défaut 512 pour textes longs).
+    class_ratio_train: Optional[List[float]] Fraction de positifs par env train
+                                             (ex : [0.2, 0.8]).  None = pas de rééquilibrage.
+    class_ratio_test : Optional[float]      Fraction de positifs au test (ex : 0.5). None = inchangé.
+    """
+    print("Chargement du dataset IMDB (semi anti-causal)...")
+    all_texts, all_labels = load_imdb_dataset(seed=seed)
+    n_total = len(all_texts)
+    all_labels_arr = np.array(all_labels, dtype=np.int64)
+    print(f"Dataset : {n_total} reviews  "
+          f"(négatif={int((all_labels_arr==0).sum())}, positif={int((all_labels_arr==1).sum())})")
+
+    rng = np.random.default_rng(seed)
+    indices = rng.permutation(n_total)
+    n_test = int(n_total * 0.10)
+    n_val  = int(n_total * 0.10)
+    test_idx  = indices[:n_test]
+    val_idx   = indices[n_test:n_test + n_val]
+    train_idx = indices[n_test + n_val:]
+    print(f"Split 80/10/10 : Train {len(train_idx)} | Val {len(val_idx)} | Test {len(test_idx)}")
+
+    n_envs = len(train_p_correct)
+    spe = len(train_idx) // n_envs
+    train_envs: List[Env] = []
+    val_envs:   List[Env] = []
+
+    val_texts  = [all_texts[int(j)] for j in val_idx]
+    val_labels = all_labels_arr[val_idx].copy()
+
+    for i, p_correct in enumerate(train_p_correct):
+        print(f"\n=== Train Env {i} (p_correct={p_correct:.0%}) ===")
+        env_idx = train_idx[i * spe:(i + 1) * spe if i < n_envs - 1 else len(train_idx)]
+        texts  = [all_texts[int(j)] for j in env_idx]
+        labels = all_labels_arr[env_idx].copy()
+
+        if class_ratio_train is not None:
+            rng_sub = np.random.default_rng(seed + 20000 + i)
+            texts, labels = _subsample_to_ratio(texts, labels, class_ratio_train[i], rng_sub)
+
+        if label_flip > 0.0:
+            rng_flip = np.random.default_rng(seed + i * 13 + 1)
+            flip_mask = rng_flip.uniform(size=len(labels)) < label_flip
+            labels[flip_mask] = 1 - labels[flip_mask]
+
+        rng_inj = np.random.default_rng(seed + i * 17 + 3)
+        texts_mod = [
+            inject_spurious_token_multiclass(t, int(l), p_correct, IMDB_TOKENS, rng_inj)
+            for t, l in zip(texts, labels)
+        ]
+        X = tokenize_and_embed_with_bert(texts_mod, bert_model, max_length, device, pooling)
+        Y = labels.reshape(-1, 1).astype(np.float32)
+        train_envs.append(Env(torch.from_numpy(X), torch.from_numpy(Y),
+                              meta={"p_correct": p_correct, "label_flip": label_flip,
+                                    "kind": "imdb_semi_anti_causal_train",
+                                    "env_id": i, "n_samples": len(X)}))
+
+        print(f"=== Val Env {i} (p_correct={p_correct:.0%}) ===")
+        val_texts_e  = list(val_texts)
+        val_labels_e = val_labels.copy()
+        if class_ratio_train is not None:
+            rng_sub_v = np.random.default_rng(seed + 21000 + i)
+            val_texts_e, val_labels_e = _subsample_to_ratio(
+                val_texts_e, val_labels_e, class_ratio_train[i], rng_sub_v)
+        if label_flip > 0.0:
+            rng_vf = np.random.default_rng(seed + 5000 + i + 1)
+            fmv = rng_vf.uniform(size=len(val_labels_e)) < label_flip
+            val_labels_e[fmv] = 1 - val_labels_e[fmv]
+        rng_v = np.random.default_rng(seed + 5000 + i)
+        val_texts_mod = [
+            inject_spurious_token_multiclass(t, int(l), p_correct, IMDB_TOKENS, rng_v)
+            for t, l in zip(val_texts_e, val_labels_e)
+        ]
+        X_val = tokenize_and_embed_with_bert(val_texts_mod, bert_model, max_length, device, pooling)
+        val_envs.append(Env(torch.from_numpy(X_val),
+                            torch.from_numpy(val_labels_e.reshape(-1, 1).astype(np.float32)),
+                            meta={"p_correct": p_correct, "kind": "imdb_semi_anti_causal_val",
+                                  "env_id": i, "n_samples": len(X_val)}))
+
+    print(f"\n=== Test OOD (p_correct={test_p_correct:.0%}) ===")
+    test_texts  = [all_texts[int(j)] for j in test_idx]
+    test_labels = all_labels_arr[test_idx].copy()
+    if class_ratio_test is not None:
+        rng_sub_t = np.random.default_rng(seed + 22000)
+        test_texts, test_labels = _subsample_to_ratio(
+            test_texts, test_labels, class_ratio_test, rng_sub_t)
+    rng_t = np.random.default_rng(seed + 777)
+    test_texts_mod = [
+        inject_spurious_token_multiclass(t, int(l), test_p_correct, IMDB_TOKENS, rng_t)
+        for t, l in zip(test_texts, test_labels)
+    ]
+    X_test = tokenize_and_embed_with_bert(test_texts_mod, bert_model, max_length, device, pooling)
+    test_env = Env(torch.from_numpy(X_test),
+                   torch.from_numpy(test_labels.reshape(-1, 1).astype(np.float32)),
+                   meta={"p_correct": test_p_correct, "kind": "imdb_semi_anti_causal_test_ood",
+                         "n_samples": len(X_test)})
+
+    print(f"\n✅ IMDB Semi Anti-Causal — Done!")
+    print(f"   Train : {sum(e.X.shape[0] for e in train_envs)} | "
+          f"Val : {val_envs[0].X.shape[0]} | Test : {test_env.X.shape[0]}")
+    return train_envs, val_envs, test_env
+
+
+# =============================================================================
+# IMDB — 2) Selection bias : sélection par lexique de sentiment fort
+# =============================================================================
+
+def _is_typical_imdb(text: str, label: int) -> bool:
+    """True si le texte contient ≥ 1 mot de sentiment correspondant à son label."""
+    text_lower = text.lower()
+    if label == 1:
+        return any(w in text_lower for w in IMDB_POSITIVE_WORDS)
+    else:
+        return any(w in text_lower for w in IMDB_NEGATIVE_WORDS)
+
+
+def _is_cross_label_imdb(text: str, label: int) -> bool:
+    """True si le texte contient des marqueurs de sentiment du label OPPOSÉ."""
+    text_lower = text.lower()
+    if label == 1:
+        return any(w in text_lower for w in IMDB_NEGATIVE_WORDS)
+    else:
+        return any(w in text_lower for w in IMDB_POSITIVE_WORDS)
+
+
+def build_envs_imdb_selection(
+    train_p_select: List[float],
+    seed: int = 1,
+    val_frac: float = 0.1,
+    label_flip: float = 0.0,
+    bert_model: str = "bert-base-uncased",
+    max_length: int = 512,
+    device: str = "cpu",
+    pooling: str = "mean",
+    ood_strategy: str = "cross_label",
+    class_ratio_train: Optional[List[float]] = None,
+    class_ratio_test: Optional[float] = None,
+) -> Tuple[List[Env], List[Env], Env]:
+    """
+    IMDB — expérience de sélection par lexique de sentiment fort.
+
+    DAG : Y → Z (présence de lexique fort) → S (sélection d'entraînement)
+
+    Typique  = critique contenant ≥ 1 mot de sentiment fort (train/val).
+    Test OOD selon ood_strategy :
+      "cross_label" : mots forts contredisent le label (adversarial pour ERM).
+      "atypical"    : aucun marqueur lexical fort (signal Z absent).
+
+    Parameters
+    ----------
+    train_p_select   : List[float]           Proba de garder un exemple typique par env.
+    ood_strategy     : str                   "cross_label" (défaut) ou "atypical".
+    max_length       : int                   Max tokens BERT (défaut 512).
+    class_ratio_train: Optional[List[float]] Fraction de positifs par env (ex : [0.2, 0.8]).
+    class_ratio_test : Optional[float]       Fraction de positifs au test (ex : 0.5).
+    """
+    print("Chargement du dataset IMDB (selection)...")
+    all_texts, all_labels = load_imdb_dataset(seed=seed)
+    n_total = len(all_texts)
+    print(f"Dataset : {n_total} reviews  |  OOD strategy : {ood_strategy}")
+
+    rng = np.random.default_rng(seed)
+    indices = rng.permutation(n_total)
+    n_envs = len(train_p_select)
+    samples_per_env = n_total // n_envs
+
+    ood_texts:  List[str] = []
+    ood_labels: List[int] = []
+    train_envs: List[Env] = []
+    val_envs:   List[Env] = []
+
+    for i, p_select in enumerate(train_p_select):
+        print(f"\n=== Env {i} (p_select={p_select:.0%}) ===")
+        env_start  = i * samples_per_env
+        env_end    = (i + 1) * samples_per_env if i < n_envs - 1 else n_total
+        env_indices = indices[env_start:env_end]
+
+        env_texts  = [all_texts[int(j)]  for j in env_indices]
+        env_labels = [all_labels[int(j)] for j in env_indices]
+
+        selected_texts:  List[str] = []
+        selected_labels: List[int] = []
+
+        for text, label in zip(env_texts, env_labels):
+            if _is_typical_imdb(text, label):
+                if rng.uniform() < p_select:
+                    selected_texts.append(text)
+                    selected_labels.append(label)
+            elif i == 0:
+                if ood_strategy == 'cross_label':
+                    if _is_cross_label_imdb(text, label):
+                        ood_texts.append(text)
+                        ood_labels.append(label)
+                else:  # atypical
+                    if not _is_cross_label_imdb(text, label):
+                        ood_texts.append(text)
+                        ood_labels.append(label)
+
+        print(f"  Sélectionné : {len(selected_texts)} reviews typiques")
+
+        sel_texts_arr  = selected_texts
+        sel_labels_arr = np.array(selected_labels)
+        if class_ratio_train is not None:
+            rng_sub = np.random.default_rng(seed + 20000 + i)
+            sel_texts_arr, sel_labels_arr = _subsample_to_ratio(
+                sel_texts_arr, sel_labels_arr, class_ratio_train[i], rng_sub)
+
+        n_sel = len(sel_texts_arr)
+        n_val = int(n_sel * val_frac)
+        idx_sh = rng.permutation(n_sel)
+        tr_idx, va_idx = idx_sh[n_val:], idx_sh[:n_val]
+
+        tr_texts  = [sel_texts_arr[j]  for j in tr_idx]
+        tr_labels = sel_labels_arr[tr_idx].copy()
+        if label_flip > 0.0:
+            rng_tf = np.random.default_rng(seed + 9000 + i)
+            tr_labels[rng_tf.uniform(size=len(tr_labels)) < label_flip] ^= 1
+        X_tr = tokenize_and_embed_with_bert(tr_texts, bert_model, max_length, device, pooling)
+        train_envs.append(Env(torch.from_numpy(X_tr),
+                              torch.from_numpy(tr_labels.reshape(-1, 1).astype(np.float32)),
+                              meta={"p_select": p_select, "kind": "imdb_selection_train",
+                                    "env_id": i, "n_samples": len(X_tr), "label_flip": label_flip}))
+
+        va_texts  = [sel_texts_arr[j]  for j in va_idx]
+        va_labels = sel_labels_arr[va_idx].copy()
+        if label_flip > 0.0:
+            rng_vf = np.random.default_rng(seed + 10000 + i)
+            va_labels[rng_vf.uniform(size=len(va_labels)) < label_flip] ^= 1
+        X_va = tokenize_and_embed_with_bert(va_texts, bert_model, max_length, device, pooling)
+        val_envs.append(Env(torch.from_numpy(X_va),
+                            torch.from_numpy(va_labels.reshape(-1, 1).astype(np.float32)),
+                            meta={"p_select": p_select, "kind": "imdb_selection_val",
+                                  "env_id": i, "n_samples": len(X_va), "label_flip": label_flip}))
+
+    print(f"\n=== Test OOD ({ood_strategy}) — {len(ood_texts)} reviews ===")
+    ood_texts_final  = ood_texts
+    ood_labels_arr   = np.array(ood_labels)
+    if class_ratio_test is not None:
+        rng_sub_t = np.random.default_rng(seed + 22000)
+        ood_texts_final, ood_labels_arr = _subsample_to_ratio(
+            ood_texts_final, ood_labels_arr, class_ratio_test, rng_sub_t)
+    X_test = tokenize_and_embed_with_bert(ood_texts_final, bert_model, max_length, device, pooling)
+    test_env = Env(torch.from_numpy(X_test),
+                   torch.from_numpy(ood_labels_arr.reshape(-1, 1).astype(np.float32)),
+                   meta={"kind": "imdb_selection_test_ood", "ood_strategy": ood_strategy,
+                         "n_samples": len(X_test)})
+
+    print(f"\n✅ IMDB Selection — Done!")
+    print(f"   Train : {sum(e.X.shape[0] for e in train_envs)} | "
+          f"Val : {sum(e.X.shape[0] for e in val_envs)} | Test : {test_env.X.shape[0]}")
+    return train_envs, val_envs, test_env
+
+
+# =============================================================================
+# IMDB — 3) Selection by size
+# =============================================================================
+# DAG : Y → Z (longueur de la critique) → S (sélection d'entraînement)
+#
+# Corrélation observée dans IMDB : les critiques négatives tendant à être plus
+# courtes (frustration, rejet rapide) et les positives plus longues (enthousiasme,
+# détail).  Cette corrélation est SPURIEUSE : la longueur ne cause pas le
+# sentiment, mais elle y est corrélée via Y → style d'écriture.
+#
+# Typique : négatif COURT (< Q1 des négatifs) ou positif LONG (> Q3 des positifs)
+# OOD     : extrêmes opposés — négatif très long, positif très court
+# =============================================================================
+
+def build_envs_imdb_size_selection(
+    train_p_select: List[float],
+    seed: int,
+    threshold_method: str = "quartile",
+    val_frac: float = 0.1,
+    label_flip: float = 0.0,
+    bert_model: str = "bert-base-uncased",
+    max_length: int = 512,
+    device: str = "cpu",
+    pooling: str = "mean",
+    class_ratio_train: Optional[List[float]] = None,
+    class_ratio_test: Optional[float] = None,
+) -> Tuple[List[Env], List[Env], Env]:
+    """
+    IMDB — sélection par longueur de critique.
+
+    DAG : Y → Z (longueur) → S (sélection d'entraînement)
+
+    Typique  : négatif COURT (< Q1 des négatifs) ou positif LONG (> Q3 des positifs).
+    OOD      : extrêmes opposés — négatif très long (> Q3 des positifs),
+               positif très court (< Q1 des négatifs).
+
+    Parameters
+    ----------
+    train_p_select   : List[float]           Proba de garder un exemple typique par env.
+    threshold_method : str                   "quartile" (défaut), "median", "soft".
+    val_frac         : float                 Fraction validation dans les exemples typiques.
+    label_flip       : float                 Taux de bruit symétrique sur les labels.
+    max_length       : int                   Max tokens BERT (défaut 512).
+    class_ratio_train: Optional[List[float]] Fraction de positifs par env (ex : [0.2, 0.8]).
+    class_ratio_test : Optional[float]       Fraction de positifs au test (ex : 0.5).
+    """
+    print("Chargement du dataset IMDB (sélection par taille)...")
+    all_texts, all_labels = load_imdb_dataset(seed=seed)
+    n_total = len(all_texts)
+    print(f"Dataset : {n_total} reviews")
+
+    rng = np.random.default_rng(seed)
+    indices = rng.permutation(n_total)
+    n_envs = len(train_p_select)
+    spe = n_total // n_envs
+
+    extreme_texts:  List[str] = []
+    extreme_labels: List[int] = []
+    train_envs: List[Env] = []
+    val_envs:   List[Env] = []
+
+    for i, p_select in enumerate(train_p_select):
+        print(f"\n=== Env {i} (p_select={p_select:.0%}) ===")
+        env_start  = i * spe
+        env_end    = (i + 1) * spe if i < n_envs - 1 else n_total
+        env_indices = indices[env_start:env_end]
+
+        env_texts  = [all_texts[int(j)]  for j in env_indices]
+        env_labels = [all_labels[int(j)] for j in env_indices]
+
+        t1, t2 = compute_size_thresholds(env_texts, env_labels, threshold_method)
+
+        selected_texts:  List[str] = []
+        selected_labels: List[int] = []
+
+        for text, label in zip(env_texts, env_labels):
+            text_len = len(text)
+            if is_typical_by_size(text, label, t1, t2):
+                if rng.uniform() < p_select:
+                    selected_texts.append(text)
+                    selected_labels.append(label)
+            elif i == 0:
+                # Extrêmes opposés : négatif très long OU positif très court
+                if label == 0 and text_len > t2:
+                    extreme_texts.append(text)
+                    extreme_labels.append(label)
+                elif label == 1 and text_len < t1:
+                    extreme_texts.append(text)
+                    extreme_labels.append(label)
+
+        print(f"  Sélectionné : {len(selected_texts)} reviews typiques")
+
+        sel_texts_sz  = selected_texts
+        sel_labels_sz = np.array(selected_labels)
+        if class_ratio_train is not None:
+            rng_sub = np.random.default_rng(seed + 20000 + i)
+            sel_texts_sz, sel_labels_sz = _subsample_to_ratio(
+                sel_texts_sz, sel_labels_sz, class_ratio_train[i], rng_sub)
+
+        n_sel = len(sel_texts_sz)
+        n_val = int(n_sel * val_frac)
+        idx_sh = rng.permutation(n_sel)
+        tr_idx, va_idx = idx_sh[n_val:], idx_sh[:n_val]
+
+        tr_texts  = [sel_texts_sz[j]  for j in tr_idx]
+        tr_labels = sel_labels_sz[tr_idx].copy()
+        if label_flip > 0.0:
+            rng_tf = np.random.default_rng(seed + 7000 + i)
+            tr_labels[rng_tf.uniform(size=len(tr_labels)) < label_flip] ^= 1
+        X_tr = tokenize_and_embed_with_bert(tr_texts, bert_model, max_length, device, pooling)
+        train_envs.append(Env(torch.from_numpy(X_tr),
+                              torch.from_numpy(tr_labels.reshape(-1, 1).astype(np.float32)),
+                              meta={"p_select": p_select, "kind": "imdb_size_selection_train",
+                                    "env_id": i, "t1": t1, "t2": t2,
+                                    "label_flip": label_flip, "n_samples": len(X_tr)}))
+
+        va_texts  = [sel_texts_sz[j]  for j in va_idx]
+        va_labels = sel_labels_sz[va_idx].copy()
+        if label_flip > 0.0:
+            rng_vf = np.random.default_rng(seed + 8000 + i)
+            va_labels[rng_vf.uniform(size=len(va_labels)) < label_flip] ^= 1
+        X_va = tokenize_and_embed_with_bert(va_texts, bert_model, max_length, device, pooling)
+        val_envs.append(Env(torch.from_numpy(X_va),
+                            torch.from_numpy(va_labels.reshape(-1, 1).astype(np.float32)),
+                            meta={"p_select": p_select, "kind": "imdb_size_selection_val",
+                                  "env_id": i, "label_flip": label_flip, "n_samples": len(X_va)}))
+
+    print(f"\n=== Test OOD (extrêmes opposés) — {len(extreme_texts)} reviews ===")
+    print(f"  Négatifs très longs + positifs très courts → signal spurieux inversé")
+    extreme_texts_final  = extreme_texts
+    extreme_labels_arr   = np.array(extreme_labels)
+    if class_ratio_test is not None:
+        rng_sub_t = np.random.default_rng(seed + 22000)
+        extreme_texts_final, extreme_labels_arr = _subsample_to_ratio(
+            extreme_texts_final, extreme_labels_arr, class_ratio_test, rng_sub_t)
+    X_test = tokenize_and_embed_with_bert(extreme_texts_final, bert_model, max_length, device, pooling)
+    test_env = Env(torch.from_numpy(X_test),
+                   torch.from_numpy(extreme_labels_arr.reshape(-1, 1).astype(np.float32)),
+                   meta={"kind": "imdb_size_selection_test_ood",
+                         "n_samples": len(X_test), "description": "extreme_opposite_by_size"})
+
+    print(f"\n✅ IMDB Size Selection — Done!")
+    print(f"   Train : {sum(e.X.shape[0] for e in train_envs)} | "
+          f"Val : {sum(e.X.shape[0] for e in val_envs)} | Test : {test_env.X.shape[0]}")
+    return train_envs, val_envs, test_env
+
+
+def load_imdb_dataset(seed: int = 42) -> Tuple[List[str], List[int]]:
+    """
+    Charge IMDB depuis Hugging Face (stanfordnlp/imdb).
+
+    On combine train (25 000) et test (25 000) et on ignore le split
+    « unsupervised » (pas de labels).  Résultat shufflé avec seed fixe.
+
+    Returns
+    -------
+    texts  : List[str]   – critiques de films (textes longs)
+    labels : List[int]   – 0 = négatif, 1 = positif
+    """
+    from datasets import concatenate_datasets
+
+    dataset = load_dataset("stanfordnlp/imdb")
+    labeled = concatenate_datasets([dataset["train"], dataset["test"]])
+    labeled = labeled.shuffle(seed=seed)
+
+    texts  = list(labeled["text"])
+    labels = [int(l) for l in labeled["label"]]
+    return texts, labels
+
+
+# =============================================================================
+# IMDB — Confounding variant 1 : varying proxy
+# =============================================================================
+# DAG identique à SMS Spam conf_varying_proxy :
+#   C ~ Ber(p_c_flip) → Z(a_e) = C XOR Ber(a_e) → token ; C → Y (flip si C=1) ; texte → Y
+# Variation d'env : a_e (bruit sur C→Z).
+# OOD : a_test ≈ 1 → token anti-corrélé avec Y_obs → Z ⊥ Y sur vrais labels.
+# =============================================================================
+
+def build_envs_imdb_conf_varying_proxy(
+    a_train: List[float],
+    a_test: float,
+    seed: int,
+    p_c_flip: float = 0.25,
+    bert_model: str = "bert-base-uncased",
+    max_length: int = 512,
+    device: str = "cpu",
+    pooling: str = "mean",
+    class_ratio_train: Optional[List[float]] = None,
+    class_ratio_test: Optional[float] = None,
+) -> Tuple[List[Env], List[Env], Env]:
+    """
+    IMDB — confounding avec variation du proxy Z = C XOR Ber(a_e).
+
+    DAG : C ~ Ber(p_c_flip) → Z(a_e) → token ; C → Y (flip déterministe si C=1) ; texte → Y
+    Variation d'env : a_e (bruit sur C→Z).
+    OOD : a_test ≈ 1 → token anti-corrélé avec Y_obs.
+
+    Parameters
+    ----------
+    a_train          : List[float]           Bruit proxy par env train (ex : [0.01, 0.1]).
+    a_test           : float                 Bruit proxy OOD (ex : 1.0).
+    p_c_flip         : float                 P(C=1) = fraction des labels flippés (défaut 0.25).
+    max_length       : int                   Max tokens BERT (défaut 512 pour textes longs IMDB).
+    class_ratio_train: Optional[List[float]] Fraction de positifs par env (ex : [0.2, 0.8]).
+    class_ratio_test : Optional[float]       Fraction de positifs au test (ex : 0.5).
+    """
+    print("Chargement du dataset IMDB (confounding – varying proxy)...")
+    all_texts, all_labels = load_imdb_dataset(seed=seed)
+    n_total = len(all_texts)
+    all_labels_arr = np.array(all_labels, dtype=np.int64)
+
+    rng_split = np.random.default_rng(seed)
+    indices = rng_split.permutation(n_total)
+    n_test = int(n_total * 0.1)
+    n_val  = int(n_total * 0.1)
+    test_idx  = indices[:n_test]
+    val_idx   = indices[n_test:n_test + n_val]
+    train_idx = indices[n_test + n_val:]
+    print(f"Dataset : {n_total} reviews | Split 80/10/10 : "
+          f"Train {len(train_idx)} | Val {len(val_idx)} | Test {len(test_idx)}")
+
+    n_envs = len(a_train)
+    spe = len(train_idx) // n_envs
+    train_envs: List[Env] = []
+    val_envs:   List[Env] = []
+    rng_master = np.random.default_rng(seed + 1)  # noqa: F841
+
+    val_texts  = [all_texts[int(j)] for j in val_idx]
+    val_labels = all_labels_arr[val_idx]
+
+    for i, a_e in enumerate(a_train):
+        print(f"\n=== Train Env {i} (a={a_e}) ===")
+        env_idx = train_idx[i * spe:(i + 1) * spe if i < n_envs - 1 else len(train_idx)]
+        texts  = [all_texts[int(j)] for j in env_idx]
+        labels = all_labels_arr[env_idx].copy()
+
+        if class_ratio_train is not None:
+            rng_sub = np.random.default_rng(seed + 20000 + i)
+            texts, labels = _subsample_to_ratio(texts, labels, class_ratio_train[i], rng_sub)
+
+        rng_e = np.random.default_rng(seed + i * 7)
+        C = rng_e.binomial(1, p_c_flip, size=len(labels))
+        N = rng_e.binomial(1, a_e, size=len(labels))
+        Z = np.logical_xor(C, N).astype(int)
+
+        X, Y = _conf_make_env(
+            texts, labels.astype(np.float32), C, Z, 1.0, rng_e,
+            bert_model, max_length, device, pooling,
+            apply_gamma=True, conf_tokens=_IMDB_CONF_TOKENS,
+        )
+        train_envs.append(Env(torch.from_numpy(X), torch.from_numpy(Y),
+                              meta={"kind": "imdb_conf_varying_proxy", "a": a_e, "p_c_flip": p_c_flip,
+                                    "split": "train", "env_id": i, "n_samples": len(X)}))
+
+        print(f"=== Val Env {i} (a={a_e}) ===")
+        val_texts_e  = list(val_texts)
+        val_labels_e = all_labels_arr[val_idx].copy()
+        if class_ratio_train is not None:
+            rng_sub_v = np.random.default_rng(seed + 21000 + i)
+            val_texts_e, val_labels_e = _subsample_to_ratio(
+                val_texts_e, val_labels_e, class_ratio_train[i], rng_sub_v)
+        rng_v = np.random.default_rng(seed + 5000 + i)
+        Cv = rng_v.binomial(1, p_c_flip, size=len(val_labels_e))
+        Nv = rng_v.binomial(1, a_e, size=len(val_labels_e))
+        Zv = np.logical_xor(Cv, Nv).astype(int)
+        X_val, Y_val = _conf_make_env(
+            val_texts_e, val_labels_e.astype(np.float32), Cv, Zv, 1.0, rng_v,
+            bert_model, max_length, device, pooling,
+            apply_gamma=True, conf_tokens=_IMDB_CONF_TOKENS,
+        )
+        val_envs.append(Env(torch.from_numpy(X_val), torch.from_numpy(Y_val),
+                            meta={"kind": "imdb_conf_varying_proxy", "a": a_e, "p_c_flip": p_c_flip,
+                                  "split": "val", "env_id": i, "n_samples": len(X_val)}))
+
+    print(f"\n=== Test OOD (a={a_test}) ===")
+    test_texts  = [all_texts[int(j)] for j in test_idx]
+    test_labels = all_labels_arr[test_idx].copy()
+    if class_ratio_test is not None:
+        rng_sub_t = np.random.default_rng(seed + 22000)
+        test_texts, test_labels = _subsample_to_ratio(
+            test_texts, test_labels, class_ratio_test, rng_sub_t)
+    rng_t = np.random.default_rng(seed + 777)
+    Ct = rng_t.binomial(1, p_c_flip, size=len(test_labels))
+    Nt = rng_t.binomial(1, a_test, size=len(test_labels))
+    Zt = np.logical_xor(Ct, Nt).astype(int)
+    X_test, Y_test = _conf_make_env(
+        test_texts, test_labels.astype(np.float32), Ct, Zt, 1.0, rng_t,
+        bert_model, max_length, device, pooling,
+        apply_gamma=False, conf_tokens=_IMDB_CONF_TOKENS,
+    )
+    test_env = Env(torch.from_numpy(X_test), torch.from_numpy(Y_test),
+                   meta={"kind": "imdb_conf_varying_proxy", "a": a_test, "p_c_flip": p_c_flip,
+                         "split": "test_ood", "n_samples": len(X_test)})
+
+    print(f"\n✅ IMDB Confounding varying proxy — Done!")
+    print(f"   Train : {sum(e.X.shape[0] for e in train_envs)} | "
+          f"Val : {val_envs[0].X.shape[0]} | Test : {test_env.X.shape[0]}")
+    return train_envs, val_envs, test_env
+
+
+# =============================================================================
+# ██████  Amazon Reviews – Books  ██████
+# =============================================================================
+# Dataset CAUSAL (X → Y) : le contenu du texte détermine si la review est utile.
+# Source : McAuley-Lab/Amazon-Reviews-2023, catégorie Books (jsonl streaming).
+# Binarisation : helpful_vote = 0 → inutile (0), helpful_vote ≥ 5 → utile (1).
+# Zone 1-4 écartée (ambiguë).
+# =============================================================================
+
+AMAZON_CLASS_NAMES: Dict[int, str] = {0: "not_helpful", 1: "helpful"}
+AMAZON_TOKENS: Dict[int, str] = {0: "moon", 1: "sun"}
+_AMAZON_CONF_TOKENS: Dict[str, str] = {
+    "ham_correlated":  "moon",   # corrélé au label 0 (inutile)
+    "spam_correlated": "sun",    # corrélé au label 1 (utile)
+}
+
+
+def load_amazon_books(
+    seed: int = 42,
+    n_target: int = 100_000,
+    helpful_threshold: int = 5,
+) -> Tuple[List[str], List[int]]:
+    """
+    Charge Amazon Reviews Books depuis HuggingFace (streaming jsonl).
+
+    Binarise sur helpful_vote :
+      - helpful_vote = 0           → inutile (0)
+      - helpful_vote ≥ threshold   → utile   (1)
+      - entre 1 et threshold-1     → écarté (ambigu)
+
+    Collecte en streaming puis sous-échantillonne à *n_target* (équilibré 50/50).
+
+    Returns
+    -------
+    texts  : List[str]
+    labels : List[int]   – 0 = inutile, 1 = utile
+    """
+    print(f"Chargement Amazon Books (streaming, cible {n_target} reviews, "
+          f"seuil helpful_vote ≥ {helpful_threshold})...")
+    ds = load_dataset(
+        "json",
+        data_files="hf://datasets/McAuley-Lab/Amazon-Reviews-2023/"
+                   "raw/review_categories/Books.jsonl",
+        split="train",
+        streaming=True,
+    )
+
+    target_per_class = n_target // 2
+    helpful_texts:     List[str] = []
+    not_helpful_texts: List[str] = []
+
+    for row in ds:
+        text = (row.get("text") or "").strip()
+        if not text:
+            continue
+        vote = int(row.get("helpful_vote", 0) or 0)
+        if vote == 0 and len(not_helpful_texts) < target_per_class:
+            not_helpful_texts.append(text)
+        elif vote >= helpful_threshold and len(helpful_texts) < target_per_class:
+            helpful_texts.append(text)
+        if (len(not_helpful_texts) >= target_per_class
+                and len(helpful_texts) >= target_per_class):
+            break
+
+    rng = np.random.default_rng(seed)
+    n_per = min(target_per_class, len(helpful_texts), len(not_helpful_texts))
+
+    texts  = not_helpful_texts[:n_per] + helpful_texts[:n_per]
+    labels = [0] * n_per + [1] * n_per
+
+    perm = rng.permutation(len(texts))
+    texts  = [texts[int(i)]  for i in perm]
+    labels = [labels[int(i)] for i in perm]
+
+    print(f"  Collecté {n_per} inutiles + {n_per} utiles = {len(texts)} total")
+    return texts, labels
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Amazon Books — Semi Anti-Causal
+# ─────────────────────────────────────────────────────────────────────────────
+
+def build_envs_amazon_semi_anti_causal(
+    train_p_correct: List[float],
+    test_p_correct: float,
+    seed: int,
+    label_flip: float = 0.0,
+    bert_model: str = "bert-base-uncased",
+    max_length: int = 512,
+    device: str = "cpu",
+    pooling: str = "mean",
+    n_target: int = 100_000,
+    class_ratio_train: Optional[List[float]] = None,
+    class_ratio_test: Optional[float] = None,
+) -> Tuple[List[Env], List[Env], Env]:
+    """
+    Semi anti-causal sur Amazon Books (utilité des reviews).
+
+    DAG : Text → Y ; Y → Z (token spurieux injecté avec proba p_correct) ; Text ⊕ Z → X.
+    OOD : p_correct ≈ 0 (tokens inversés).
+    """
+    all_texts, all_labels = load_amazon_books(seed=seed, n_target=n_target)
+    n_total = len(all_texts)
+    all_labels_arr = np.array(all_labels, dtype=np.int64)
+    print(f"Dataset : {n_total} reviews  "
+          f"(négatif={int((all_labels_arr==0).sum())}, positif={int((all_labels_arr==1).sum())})")
+
+    rng = np.random.default_rng(seed)
+    indices = rng.permutation(n_total)
+    n_test = int(n_total * 0.10)
+    n_val  = int(n_total * 0.10)
+    test_idx  = indices[:n_test]
+    val_idx   = indices[n_test:n_test + n_val]
+    train_idx = indices[n_test + n_val:]
+    print(f"Split 80/10/10 : Train {len(train_idx)} | Val {len(val_idx)} | Test {len(test_idx)}")
+
+    n_envs = len(train_p_correct)
+    spe = len(train_idx) // n_envs
+    train_envs: List[Env] = []
+    val_envs:   List[Env] = []
+
+    val_texts  = [all_texts[int(j)] for j in val_idx]
+    val_labels = all_labels_arr[val_idx].copy()
+
+    for i, p_correct in enumerate(train_p_correct):
+        print(f"\n=== Train Env {i} (p_correct={p_correct:.0%}) ===")
+        env_idx = train_idx[i * spe:(i + 1) * spe if i < n_envs - 1 else len(train_idx)]
+        texts  = [all_texts[int(j)] for j in env_idx]
+        labels = all_labels_arr[env_idx].copy()
+
+        if class_ratio_train is not None:
+            rng_sub = np.random.default_rng(seed + 20000 + i)
+            texts, labels = _subsample_to_ratio(texts, labels, class_ratio_train[i], rng_sub)
+
+        if label_flip > 0.0:
+            rng_flip = np.random.default_rng(seed + i * 13 + 1)
+            flip_mask = rng_flip.uniform(size=len(labels)) < label_flip
+            labels[flip_mask] = 1 - labels[flip_mask]
+
+        rng_inj = np.random.default_rng(seed + i * 17 + 3)
+        texts_mod = [
+            inject_spurious_token_multiclass(t, int(l), p_correct, AMAZON_TOKENS, rng_inj)
+            for t, l in zip(texts, labels)
+        ]
+        X = tokenize_and_embed_with_bert(texts_mod, bert_model, max_length, device, pooling)
+        Y = labels.reshape(-1, 1).astype(np.float32)
+        train_envs.append(Env(torch.from_numpy(X), torch.from_numpy(Y),
+                              meta={"p_correct": p_correct, "label_flip": label_flip,
+                                    "kind": "amazon_semi_anti_causal_train",
+                                    "env_id": i, "n_samples": len(X)}))
+
+        print(f"=== Val Env {i} (p_correct={p_correct:.0%}) ===")
+        val_texts_e  = list(val_texts)
+        val_labels_e = val_labels.copy()
+        if class_ratio_train is not None:
+            rng_sub_v = np.random.default_rng(seed + 21000 + i)
+            val_texts_e, val_labels_e = _subsample_to_ratio(
+                val_texts_e, val_labels_e, class_ratio_train[i], rng_sub_v)
+        if label_flip > 0.0:
+            rng_vf = np.random.default_rng(seed + 5000 + i + 1)
+            fmv = rng_vf.uniform(size=len(val_labels_e)) < label_flip
+            val_labels_e[fmv] = 1 - val_labels_e[fmv]
+        rng_v = np.random.default_rng(seed + 5000 + i)
+        val_texts_mod = [
+            inject_spurious_token_multiclass(t, int(l), p_correct, AMAZON_TOKENS, rng_v)
+            for t, l in zip(val_texts_e, val_labels_e)
+        ]
+        X_val = tokenize_and_embed_with_bert(val_texts_mod, bert_model, max_length, device, pooling)
+        val_envs.append(Env(torch.from_numpy(X_val),
+                            torch.from_numpy(val_labels_e.reshape(-1, 1).astype(np.float32)),
+                            meta={"p_correct": p_correct, "kind": "amazon_semi_anti_causal_val",
+                                  "env_id": i, "n_samples": len(X_val)}))
+
+    print(f"\n=== Test OOD (p_correct={test_p_correct:.0%}) ===")
+    test_texts  = [all_texts[int(j)] for j in test_idx]
+    test_labels = all_labels_arr[test_idx].copy()
+    if class_ratio_test is not None:
+        rng_sub_t = np.random.default_rng(seed + 22000)
+        test_texts, test_labels = _subsample_to_ratio(
+            test_texts, test_labels, class_ratio_test, rng_sub_t)
+    rng_t = np.random.default_rng(seed + 777)
+    test_texts_mod = [
+        inject_spurious_token_multiclass(t, int(l), test_p_correct, AMAZON_TOKENS, rng_t)
+        for t, l in zip(test_texts, test_labels)
+    ]
+    X_test = tokenize_and_embed_with_bert(test_texts_mod, bert_model, max_length, device, pooling)
+    test_env = Env(torch.from_numpy(X_test),
+                   torch.from_numpy(test_labels.reshape(-1, 1).astype(np.float32)),
+                   meta={"p_correct": test_p_correct, "kind": "amazon_semi_anti_causal_test_ood",
+                         "n_samples": len(X_test)})
+
+    print(f"\n✅ Amazon Books Semi Anti-Causal — Done!")
+    print(f"   Train : {sum(e.X.shape[0] for e in train_envs)} | "
+          f"Val : {val_envs[0].X.shape[0]} | Test : {test_env.X.shape[0]}")
+    return train_envs, val_envs, test_env
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Amazon Books — Selection bias par taille
+# ─────────────────────────────────────────────────────────────────────────────
+# DAG : Y → Z (longueur de la review) → S (sélection d'entraînement)
+#
+# Corrélation naturelle dans Amazon Books : les reviews utiles tendent à être
+# plus longues (plus détaillées et structurées) que les reviews inutiles.
+# Cette corrélation est SPURIEUSE pour la tâche : la longueur ne cause pas
+# l'utilité, mais elle y est corrélée via Y → style d'écriture.
+#
+# Typique : inutile (0) COURT  (< Q1 des inutiles)
+#           utile   (1) LONG   (> Q3 des utiles)
+# OOD     : inutile (0) très LONG, utile (1) très COURT → signal spurieux inversé
+# ─────────────────────────────────────────────────────────────────────────────
+
+def build_envs_amazon_size_selection(
+    train_p_select: List[float],
+    seed: int = 1,
+    threshold_method: str = "quartile",
+    val_frac: float = 0.1,
+    label_flip: float = 0.0,
+    bert_model: str = "bert-base-uncased",
+    max_length: int = 512,
+    device: str = "cpu",
+    pooling: str = "mean",
+    n_target: int = 100_000,
+    class_ratio_train: Optional[List[float]] = None,
+    class_ratio_test: Optional[float] = None,
+) -> Tuple[List[Env], List[Env], Env]:
+    """
+    Biais de sélection par taille sur Amazon Books (utilité des reviews).
+
+    Typique  : inutile (0) COURT (< Q1) ou utile (1) LONG (> Q3).
+    OOD      : extrêmes opposés — inutile très long, utile très court.
+
+    Parameters
+    ----------
+    threshold_method : "quartile" (défaut), "median", "soft".
+    """
+    print("Chargement Amazon Books (sélection par taille)...")
+    all_texts, all_labels = load_amazon_books(seed=seed, n_target=n_target)
+    n_total = len(all_texts)
+    print(f"Dataset : {n_total} reviews")
+
+    rng = np.random.default_rng(seed)
+    indices = rng.permutation(n_total)
+    n_envs = len(train_p_select)
+    spe = n_total // n_envs
+
+    extreme_texts:  List[str] = []
+    extreme_labels: List[int] = []
+    train_envs: List[Env] = []
+    val_envs:   List[Env] = []
+
+    for i, p_select in enumerate(train_p_select):
+        print(f"\n=== Env {i} (p_select={p_select:.0%}) ===")
+        env_start  = i * spe
+        env_end    = (i + 1) * spe if i < n_envs - 1 else n_total
+        env_indices = indices[env_start:env_end]
+
+        env_texts  = [all_texts[int(j)] for j in env_indices]
+        env_labels = [all_labels[int(j)] for j in env_indices]
+
+        t1, t2 = compute_size_thresholds(env_texts, env_labels, threshold_method)
+
+        selected_texts:  List[str] = []
+        selected_labels: List[int] = []
+
+        for text, label in zip(env_texts, env_labels):
+            text_len = len(text)
+            if is_typical_by_size(text, label, t1, t2):
+                if rng.uniform() < p_select:
+                    selected_texts.append(text)
+                    selected_labels.append(label)
+            elif i == 0:
+                # Extrêmes opposés : inutile très long OU utile très court
+                if label == 0 and text_len > t2:
+                    extreme_texts.append(text)
+                    extreme_labels.append(label)
+                elif label == 1 and text_len < t1:
+                    extreme_texts.append(text)
+                    extreme_labels.append(label)
+
+        print(f"  Sélectionné : {len(selected_texts)} reviews typiques")
+
+        sel_texts_sz  = selected_texts
+        sel_labels_sz = np.array(selected_labels)
+        if class_ratio_train is not None:
+            rng_sub = np.random.default_rng(seed + 20000 + i)
+            sel_texts_sz, sel_labels_sz = _subsample_to_ratio(
+                sel_texts_sz, sel_labels_sz, class_ratio_train[i], rng_sub)
+
+        n_sel = len(sel_texts_sz)
+        n_val = int(n_sel * val_frac)
+        idx_sh = rng.permutation(n_sel)
+        tr_idx, va_idx = idx_sh[n_val:], idx_sh[:n_val]
+
+        tr_texts  = [sel_texts_sz[j]  for j in tr_idx]
+        tr_labels = sel_labels_sz[tr_idx].copy()
+        if label_flip > 0.0:
+            rng_tf = np.random.default_rng(seed + 7000 + i)
+            tr_labels[rng_tf.uniform(size=len(tr_labels)) < label_flip] ^= 1
+        X_tr = tokenize_and_embed_with_bert(tr_texts, bert_model, max_length, device, pooling)
+        train_envs.append(Env(torch.from_numpy(X_tr),
+                              torch.from_numpy(tr_labels.reshape(-1, 1).astype(np.float32)),
+                              meta={"p_select": p_select, "kind": "amazon_size_selection_train",
+                                    "env_id": i, "t1": t1, "t2": t2,
+                                    "label_flip": label_flip, "n_samples": len(X_tr)}))
+
+        va_texts  = [sel_texts_sz[j]  for j in va_idx]
+        va_labels = sel_labels_sz[va_idx].copy()
+        if label_flip > 0.0:
+            rng_vf = np.random.default_rng(seed + 8000 + i)
+            va_labels[rng_vf.uniform(size=len(va_labels)) < label_flip] ^= 1
+        X_va = tokenize_and_embed_with_bert(va_texts, bert_model, max_length, device, pooling)
+        val_envs.append(Env(torch.from_numpy(X_va),
+                            torch.from_numpy(va_labels.reshape(-1, 1).astype(np.float32)),
+                            meta={"p_select": p_select, "kind": "amazon_size_selection_val",
+                                  "env_id": i, "label_flip": label_flip, "n_samples": len(X_va)}))
+
+    print(f"\n=== Test OOD (extrêmes opposés) — {len(extreme_texts)} reviews ===")
+    extreme_texts_final  = extreme_texts
+    extreme_labels_arr   = np.array(extreme_labels)
+    if class_ratio_test is not None:
+        rng_sub_t = np.random.default_rng(seed + 22000)
+        extreme_texts_final, extreme_labels_arr = _subsample_to_ratio(
+            extreme_texts_final, extreme_labels_arr, class_ratio_test, rng_sub_t)
+    X_test = tokenize_and_embed_with_bert(
+        extreme_texts_final, bert_model, max_length, device, pooling)
+    test_env = Env(torch.from_numpy(X_test),
+                   torch.from_numpy(extreme_labels_arr.reshape(-1, 1).astype(np.float32)),
+                   meta={"kind": "amazon_size_selection_test_ood",
+                         "n_samples": len(X_test), "description": "extreme_opposite_by_size"})
+
+    print(f"\n✅ Amazon Books Size Selection — Done!")
+    print(f"   Train : {sum(e.X.shape[0] for e in train_envs)} | "
+          f"Val : {sum(e.X.shape[0] for e in val_envs)} | Test : {test_env.X.shape[0]}")
+    return train_envs, val_envs, test_env
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Amazon Books — Confounding variant 1 : varying proxy
+# ─────────────────────────────────────────────────────────────────────────────
+
+def build_envs_amazon_conf_varying_proxy(
+    a_train: List[float],
+    a_test: float,
+    seed: int,
+    p_c_flip: float = 0.25,
+    bert_model: str = "bert-base-uncased",
+    max_length: int = 512,
+    device: str = "cpu",
+    pooling: str = "mean",
+    n_target: int = 100_000,
+    class_ratio_train: Optional[List[float]] = None,
+    class_ratio_test: Optional[float] = None,
+) -> Tuple[List[Env], List[Env], Env]:
+    """
+    Confounding avec proxy variable sur Amazon Books (utilité des reviews).
+
+    DAG : C ~ Ber(p_c_flip) → Z = C ⊕ Ber(a_e) → token injecté ;
+          C → Y (flip si C=1) ; Text → Y.
+    OOD : a_test = 1.0  ⇒  Z ⊥ C  ⇒  token non informatif.
+    """
+    all_texts, all_labels = load_amazon_books(seed=seed, n_target=n_target)
+    n_total = len(all_texts)
+    all_labels_arr = np.array(all_labels, dtype=np.int64)
+
+    rng_split = np.random.default_rng(seed)
+    indices = rng_split.permutation(n_total)
+    n_test = int(n_total * 0.1)
+    n_val  = int(n_total * 0.1)
+    test_idx  = indices[:n_test]
+    val_idx   = indices[n_test:n_test + n_val]
+    train_idx = indices[n_test + n_val:]
+    print(f"Dataset : {n_total} reviews | Split 80/10/10 : "
+          f"Train {len(train_idx)} | Val {len(val_idx)} | Test {len(test_idx)}")
+
+    n_envs = len(a_train)
+    spe = len(train_idx) // n_envs
+    train_envs: List[Env] = []
+    val_envs:   List[Env] = []
+
+    val_texts  = [all_texts[int(j)] for j in val_idx]
+
+    for i, a_e in enumerate(a_train):
+        print(f"\n=== Train Env {i} (a={a_e}) ===")
+        env_idx = train_idx[i * spe:(i + 1) * spe if i < n_envs - 1 else len(train_idx)]
+        texts  = [all_texts[int(j)] for j in env_idx]
+        labels = all_labels_arr[env_idx].copy()
+
+        if class_ratio_train is not None:
+            rng_sub = np.random.default_rng(seed + 20000 + i)
+            texts, labels = _subsample_to_ratio(texts, labels, class_ratio_train[i], rng_sub)
+
+        rng_e = np.random.default_rng(seed + i * 7)
+        C = rng_e.binomial(1, p_c_flip, size=len(labels))
+        N = rng_e.binomial(1, a_e, size=len(labels))
+        Z = np.logical_xor(C, N).astype(int)
+
+        X, Y = _conf_make_env(
+            texts, labels.astype(np.float32), C, Z, 1.0, rng_e,
+            bert_model, max_length, device, pooling,
+            apply_gamma=True, conf_tokens=_AMAZON_CONF_TOKENS,
+        )
+        train_envs.append(Env(torch.from_numpy(X), torch.from_numpy(Y),
+                              meta={"kind": "amazon_conf_varying_proxy", "a": a_e,
+                                    "p_c_flip": p_c_flip,
+                                    "split": "train", "env_id": i, "n_samples": len(X)}))
+
+        print(f"=== Val Env {i} (a={a_e}) ===")
+        val_texts_e  = list(val_texts)
+        val_labels_e = all_labels_arr[val_idx].copy()
+        if class_ratio_train is not None:
+            rng_sub_v = np.random.default_rng(seed + 21000 + i)
+            val_texts_e, val_labels_e = _subsample_to_ratio(
+                val_texts_e, val_labels_e, class_ratio_train[i], rng_sub_v)
+        rng_v = np.random.default_rng(seed + 5000 + i)
+        Cv = rng_v.binomial(1, p_c_flip, size=len(val_labels_e))
+        Nv = rng_v.binomial(1, a_e, size=len(val_labels_e))
+        Zv = np.logical_xor(Cv, Nv).astype(int)
+        X_val, Y_val = _conf_make_env(
+            val_texts_e, val_labels_e.astype(np.float32), Cv, Zv, 1.0, rng_v,
+            bert_model, max_length, device, pooling,
+            apply_gamma=True, conf_tokens=_AMAZON_CONF_TOKENS,
+        )
+        val_envs.append(Env(torch.from_numpy(X_val), torch.from_numpy(Y_val),
+                            meta={"kind": "amazon_conf_varying_proxy", "a": a_e,
+                                  "p_c_flip": p_c_flip,
+                                  "split": "val", "env_id": i, "n_samples": len(X_val)}))
+
+    print(f"\n=== Test OOD (a={a_test}) ===")
+    test_texts  = [all_texts[int(j)] for j in test_idx]
+    test_labels = all_labels_arr[test_idx].copy()
+    if class_ratio_test is not None:
+        rng_sub_t = np.random.default_rng(seed + 22000)
+        test_texts, test_labels = _subsample_to_ratio(
+            test_texts, test_labels, class_ratio_test, rng_sub_t)
+    rng_t = np.random.default_rng(seed + 777)
+    Ct = rng_t.binomial(1, p_c_flip, size=len(test_labels))
+    Nt = rng_t.binomial(1, a_test, size=len(test_labels))
+    Zt = np.logical_xor(Ct, Nt).astype(int)
+    X_test, Y_test = _conf_make_env(
+        test_texts, test_labels.astype(np.float32), Ct, Zt, 1.0, rng_t,
+        bert_model, max_length, device, pooling,
+        apply_gamma=False, conf_tokens=_AMAZON_CONF_TOKENS,
+    )
+    test_env = Env(torch.from_numpy(X_test), torch.from_numpy(Y_test),
+                   meta={"kind": "amazon_conf_varying_proxy", "a": a_test,
+                         "p_c_flip": p_c_flip,
+                         "split": "test_ood", "n_samples": len(X_test)})
+
+    print(f"\n✅ Amazon Books Confounding varying proxy — Done!")
+    print(f"   Train : {sum(e.X.shape[0] for e in train_envs)} | "
+          f"Val : {val_envs[0].X.shape[0]} | Test : {test_env.X.shape[0]}")
+    return train_envs, val_envs, test_env
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Amazon Books — Rating Natural (biais longueur naturel, envs = notes)
+# ─────────────────────────────────────────────────────────────────────────────
+# Env 0 : reviews 5★   → "long = utile" tient fortement
+# Env 1 : reviews 3-4★ → corrélation longueur-utilité plus faible
+# Test  : reviews 1★   → un avis bref négatif peut être très utile
+#         → le raccourci longueur casse
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _load_amazon_books_by_rating(
+    seed: int = 42,
+    n_per_group: int = 20_000,
+    helpful_threshold: int = 5,
+) -> Dict[str, Tuple[List[str], List[int]]]:
+    """
+    Charge Amazon Books en streaming et regroupe par note.
+
+    Groupes : "5" (5★), "3-4" (3★ ou 4★), "1" (1★).
+    Pour chaque groupe, collecte n_per_group//2 utiles + n_per_group//2 inutiles.
+
+    Returns
+    -------
+    dict  : {"5": (texts, labels), "3-4": ..., "1": ...}
+    """
+    print(f"Chargement Amazon Books par note (streaming, "
+          f"cible {n_per_group} par groupe, seuil helpful_vote ≥ {helpful_threshold})...")
+
+    ds = load_dataset(
+        "json",
+        data_files="hf://datasets/McAuley-Lab/Amazon-Reviews-2023/"
+                   "raw/review_categories/Books.jsonl",
+        split="train",
+        streaming=True,
+    )
+
+    target_half = n_per_group // 2
+    # {group: {0: [...], 1: [...]}}
+    buckets: Dict[str, Dict[int, List[str]]] = {
+        "5":   {0: [], 1: []},
+        "3-4": {0: [], 1: []},
+        "1":   {0: [], 1: []},
+    }
+
+    def _group_full(g: str) -> bool:
+        return (len(buckets[g][0]) >= target_half
+                and len(buckets[g][1]) >= target_half)
+
+    for row in ds:
+        if all(_group_full(g) for g in buckets):
+            break
+
+        text = (row.get("text") or "").strip()
+        if not text:
+            continue
+
+        rating = float(row.get("rating", 0) or 0)
+        vote   = int(row.get("helpful_vote", 0) or 0)
+
+        # Déterminer le groupe
+        if rating == 5.0:
+            grp = "5"
+        elif rating in (3.0, 4.0):
+            grp = "3-4"
+        elif rating == 1.0:
+            grp = "1"
+        else:
+            continue  # 2★ écarté
+
+        if _group_full(grp):
+            continue
+
+        # Binariser l'utilité
+        if vote == 0 and len(buckets[grp][0]) < target_half:
+            buckets[grp][0].append(text)
+        elif vote >= helpful_threshold and len(buckets[grp][1]) < target_half:
+            buckets[grp][1].append(text)
+
+    rng = np.random.default_rng(seed)
+    result: Dict[str, Tuple[List[str], List[int]]] = {}
+    for grp in ("5", "3-4", "1"):
+        n0 = len(buckets[grp][0])
+        n1 = len(buckets[grp][1])
+        n  = min(n0, n1, target_half)
+        texts  = buckets[grp][0][:n] + buckets[grp][1][:n]
+        labels = [0] * n + [1] * n
+        perm = rng.permutation(len(texts))
+        texts  = [texts[int(i)]  for i in perm]
+        labels = [labels[int(i)] for i in perm]
+        result[grp] = (texts, labels)
+        print(f"  Groupe {grp}★ : {n} inutiles + {n} utiles = {2*n}")
+
+    return result
+
+
+def build_envs_amazon_rating_natural(
+    seed: int = 1,
+    val_frac: float = 0.1,
+    label_flip: float = 0.0,
+    bert_model: str = "bert-base-uncased",
+    max_length: int = 512,
+    device: str = "cpu",
+    pooling: str = "mean",
+    n_per_group: int = 20_000,
+    helpful_threshold: int = 5,
+) -> Tuple[List[Env], List[Env], Env]:
+    """
+    Expérience naturelle : envs définis par la note (rating).
+
+    Env 0 : reviews 5★   — corrélation longueur–utilité forte
+    Env 1 : reviews 3-4★ — corrélation longueur–utilité modérée
+    Test  : reviews 1★   — corrélation longueur–utilité faible / inversée
+            (un avis négatif bref peut être très utile)
+
+    Le label est toujours helpful_vote=0 → 0, helpful_vote≥5 → 1.
+    Aucune manipulation synthétique : le biais est 100% naturel.
+    """
+    groups = _load_amazon_books_by_rating(
+        seed=seed, n_per_group=n_per_group,
+        helpful_threshold=helpful_threshold,
+    )
+
+    train_envs: List[Env] = []
+    val_envs:   List[Env] = []
+    rng = np.random.default_rng(seed)
+
+    # ── Train / Val : 5★ (env 0) et 3-4★ (env 1) ──
+    for i, grp in enumerate(("5", "3-4")):
+        texts, labels_list = groups[grp]
+        labels = np.array(labels_list)
+
+        n = len(texts)
+        n_val = int(n * val_frac)
+        perm = rng.permutation(n)
+        tr_idx, va_idx = perm[n_val:], perm[:n_val]
+
+        # ─── Train ───
+        tr_texts  = [texts[int(j)] for j in tr_idx]
+        tr_labels = labels[tr_idx].copy()
+        if label_flip > 0.0:
+            rng_f = np.random.default_rng(seed + 7000 + i)
+            tr_labels[rng_f.uniform(size=len(tr_labels)) < label_flip] ^= 1
+
+        # Stats longueur
+        lens_0 = [len(tr_texts[k]) for k in range(len(tr_texts)) if tr_labels[k] == 0]
+        lens_1 = [len(tr_texts[k]) for k in range(len(tr_texts)) if tr_labels[k] == 1]
+        print(f"\n=== Env {i} ({grp}★) — {len(tr_texts)} train ===")
+        print(f"  Longueur inutiles : médiane={np.median(lens_0):.0f}, "
+              f"moyenne={np.mean(lens_0):.0f}")
+        print(f"  Longueur utiles   : médiane={np.median(lens_1):.0f}, "
+              f"moyenne={np.mean(lens_1):.0f}")
+
+        X_tr = tokenize_and_embed_with_bert(
+            tr_texts, bert_model, max_length, device, pooling)
+        train_envs.append(Env(
+            torch.from_numpy(X_tr),
+            torch.from_numpy(tr_labels.reshape(-1, 1).astype(np.float32)),
+            meta={"kind": "amazon_rating_natural_train", "rating_group": grp,
+                  "env_id": i, "label_flip": label_flip,
+                  "n_samples": len(X_tr)}))
+
+        # ─── Val ───
+        va_texts  = [texts[int(j)] for j in va_idx]
+        va_labels = labels[va_idx].copy()
+        if label_flip > 0.0:
+            rng_vf = np.random.default_rng(seed + 8000 + i)
+            va_labels[rng_vf.uniform(size=len(va_labels)) < label_flip] ^= 1
+
+        X_va = tokenize_and_embed_with_bert(
+            va_texts, bert_model, max_length, device, pooling)
+        val_envs.append(Env(
+            torch.from_numpy(X_va),
+            torch.from_numpy(va_labels.reshape(-1, 1).astype(np.float32)),
+            meta={"kind": "amazon_rating_natural_val", "rating_group": grp,
+                  "env_id": i, "n_samples": len(X_va)}))
+
+    # ── Test OOD : 1★ ──
+    test_texts, test_labels_list = groups["1"]
+    test_labels = np.array(test_labels_list)
+    lens_0t = [len(test_texts[k]) for k in range(len(test_texts)) if test_labels[k] == 0]
+    lens_1t = [len(test_texts[k]) for k in range(len(test_texts)) if test_labels[k] == 1]
+    print(f"\n=== Test OOD (1★) — {len(test_texts)} reviews ===")
+    print(f"  Longueur inutiles : médiane={np.median(lens_0t):.0f}, "
+          f"moyenne={np.mean(lens_0t):.0f}")
+    print(f"  Longueur utiles   : médiane={np.median(lens_1t):.0f}, "
+          f"moyenne={np.mean(lens_1t):.0f}")
+
+    X_test = tokenize_and_embed_with_bert(
+        test_texts, bert_model, max_length, device, pooling)
+    test_env = Env(
+        torch.from_numpy(X_test),
+        torch.from_numpy(test_labels.reshape(-1, 1).astype(np.float32)),
+        meta={"kind": "amazon_rating_natural_test_ood", "rating_group": "1",
+              "n_samples": len(X_test)})
+
+    print(f"\n✅ Amazon Books Rating Natural — Done!")
+    print(f"   Env 0 (5★): {train_envs[0].X.shape[0]} train, {val_envs[0].X.shape[0]} val")
+    print(f"   Env 1 (3-4★): {train_envs[1].X.shape[0]} train, {val_envs[1].X.shape[0]} val")
+    print(f"   Test OOD (1★): {test_env.X.shape[0]}")
+    return train_envs, val_envs, test_env
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Amazon Books — Keyword Selection (lexique de recommandation)
+# ─────────────────────────────────────────────────────────────────────────────
+# DAG : Y → Z (présence de mots de recommandation) → S (sélection)
+#
+# Corrélation observée : les reviews utiles contiennent souvent un vocabulaire
+# de recommandation explicite ("recommend", "must read", "page-turner"…).
+# Cette corrélation est SPURIEUSE : ce n'est pas la recommandation qui cause
+# l'utilité, c'est le contenu détaillé. Un "Must read! Amazing!" sans détail
+# n'est pas utile ; une analyse factuelle sans mots de reco peut l'être.
+#
+# Typique : utile (1) AVEC mots de recommandation
+#           OU inutile (0) SANS mots de recommandation
+# OOD cross_label : inutile AVEC mots de recommandation (enthousiaste mais vide)
+#                   + utile SANS mots de recommandation (factuel mais utile)
+# ─────────────────────────────────────────────────────────────────────────────
+
+AMAZON_RECO_WORDS: List[str] = [
+    # Recommandation explicite
+    "recommend", "highly recommend", "definitely recommend",
+    "must read", "must-read",
+    "page-turner", "page turner",
+    "couldn't put it down", "could not put it down",
+    # Qualité d'écriture
+    "well written", "well-written",
+    "beautifully written", "wonderfully written",
+    # Jugement superlatif
+    "one of the best", "best book", "best books",
+    "five stars", "5 stars", "5 star",
+    "loved this book", "loved this series", "love this book", "love this author",
+    "thoroughly enjoyed", "truly enjoyed",
+    # Qualificatifs d'immersion
+    "captivating", "engrossing", "riveting", "gripping",
+    "masterpiece",
+]
+
+
+def _is_typical_amazon(text: str, label: int) -> bool:
+    """Typique = utile + mots de recommandation, OU inutile + sans mots de reco."""
+    has_reco = any(w in text.lower() for w in AMAZON_RECO_WORDS)
+    if label == 1:
+        return has_reco       # utile + recommandation
+    else:
+        return not has_reco   # inutile + pas de recommandation
+
+
+def _is_cross_label_amazon(text: str, label: int) -> bool:
+    """Cross = les mots de recommandation contredisent le label."""
+    has_reco = any(w in text.lower() for w in AMAZON_RECO_WORDS)
+    if label == 0:
+        return has_reco       # inutile AVEC mots de recommandation
+    else:
+        return not has_reco   # utile SANS mots de recommandation
+
+
+def build_envs_amazon_keyword_selection(
+    train_p_select: List[float],
+    seed: int = 1,
+    val_frac: float = 0.1,
+    label_flip: float = 0.0,
+    bert_model: str = "bert-base-uncased",
+    max_length: int = 512,
+    device: str = "cpu",
+    pooling: str = "mean",
+    n_target: int = 100_000,
+    ood_strategy: str = "cross_label",
+) -> Tuple[List[Env], List[Env], Env]:
+    """
+    Amazon Books — sélection par lexique de recommandation.
+
+    DAG : Y → Z (présence de mots de recommandation) → S (sélection)
+
+    Typique  : utile (1) + mots de reco, OU inutile (0) + pas de mots de reco.
+    OOD cross_label : inutile + mots de reco (enthousiaste mais vide)
+                      + utile + pas de mots de reco (factuel mais utile).
+    OOD atypical    : reviews sans pattern clair (ni typique ni cross).
+
+    Parameters
+    ----------
+    train_p_select : List[float]
+        Proba de garder un exemple typique par env.
+    ood_strategy : str
+        "cross_label" (défaut) ou "atypical".
+    n_target : int
+        Nombre total de reviews à charger (équilibré 50/50).
+    """
+    print("Chargement Amazon Books (keyword selection)...")
+    all_texts, all_labels = load_amazon_books(seed=seed, n_target=n_target)
+    n_total = len(all_texts)
+    print(f"Dataset : {n_total} reviews  |  OOD strategy : {ood_strategy}")
+
+    rng = np.random.default_rng(seed)
+    indices = rng.permutation(n_total)
+    n_envs = len(train_p_select)
+    spe = n_total // n_envs
+
+    ood_texts:  List[str] = []
+    ood_labels: List[int] = []
+    train_envs: List[Env] = []
+    val_envs:   List[Env] = []
+
+    for i, p_select in enumerate(train_p_select):
+        print(f"\n=== Env {i} (p_select={p_select:.0%}) ===")
+        env_start  = i * spe
+        env_end    = (i + 1) * spe if i < n_envs - 1 else n_total
+        env_indices = indices[env_start:env_end]
+
+        env_texts  = [all_texts[int(j)]  for j in env_indices]
+        env_labels = [all_labels[int(j)] for j in env_indices]
+
+        selected_texts:  List[str] = []
+        selected_labels: List[int] = []
+
+        for text, label in zip(env_texts, env_labels):
+            if _is_typical_amazon(text, label):
+                if rng.uniform() < p_select:
+                    selected_texts.append(text)
+                    selected_labels.append(label)
+            elif i == 0:
+                if ood_strategy == 'cross_label':
+                    if _is_cross_label_amazon(text, label):
+                        ood_texts.append(text)
+                        ood_labels.append(label)
+                else:  # atypical
+                    if not _is_cross_label_amazon(text, label):
+                        ood_texts.append(text)
+                        ood_labels.append(label)
+
+        print(f"  Sélectionné : {len(selected_texts)} reviews typiques")
+
+        sel_labels_arr = np.array(selected_labels)
+        n_sel = len(selected_texts)
+        n_val = int(n_sel * val_frac)
+        idx_sh = rng.permutation(n_sel)
+        tr_idx, va_idx = idx_sh[n_val:], idx_sh[:n_val]
+
+        # ─── Train ───
+        tr_texts  = [selected_texts[j] for j in tr_idx]
+        tr_labels = sel_labels_arr[tr_idx].copy()
+        if label_flip > 0.0:
+            rng_tf = np.random.default_rng(seed + 9000 + i)
+            tr_labels[rng_tf.uniform(size=len(tr_labels)) < label_flip] ^= 1
+        X_tr = tokenize_and_embed_with_bert(
+            tr_texts, bert_model, max_length, device, pooling)
+        train_envs.append(Env(
+            torch.from_numpy(X_tr),
+            torch.from_numpy(tr_labels.reshape(-1, 1).astype(np.float32)),
+            meta={"p_select": p_select, "kind": "amazon_keyword_selection_train",
+                  "env_id": i, "label_flip": label_flip, "n_samples": len(X_tr)}))
+
+        # ─── Val ───
+        va_texts  = [selected_texts[j] for j in va_idx]
+        va_labels = sel_labels_arr[va_idx].copy()
+        if label_flip > 0.0:
+            rng_vf = np.random.default_rng(seed + 10000 + i)
+            va_labels[rng_vf.uniform(size=len(va_labels)) < label_flip] ^= 1
+        X_va = tokenize_and_embed_with_bert(
+            va_texts, bert_model, max_length, device, pooling)
+        val_envs.append(Env(
+            torch.from_numpy(X_va),
+            torch.from_numpy(va_labels.reshape(-1, 1).astype(np.float32)),
+            meta={"p_select": p_select, "kind": "amazon_keyword_selection_val",
+                  "env_id": i, "n_samples": len(X_va)}))
+
+    # ─── Test OOD ───
+    print(f"\n=== Test OOD ({ood_strategy}) — {len(ood_texts)} reviews ===")
+    ood_labels_arr = np.array(ood_labels)
+    X_test = tokenize_and_embed_with_bert(
+        ood_texts, bert_model, max_length, device, pooling)
+    test_env = Env(
+        torch.from_numpy(X_test),
+        torch.from_numpy(ood_labels_arr.reshape(-1, 1).astype(np.float32)),
+        meta={"kind": "amazon_keyword_selection_test_ood",
+              "ood_strategy": ood_strategy, "n_samples": len(X_test)})
+
+    print(f"\n✅ Amazon Books Keyword Selection — Done!")
+    print(f"   Train : {sum(e.X.shape[0] for e in train_envs)} | "
+          f"Val : {sum(e.X.shape[0] for e in val_envs)} | Test : {test_env.X.shape[0]}")
+    return train_envs, val_envs, test_env
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Amazon Books — Sentiment Selection (note comme proxy trompeur d'utilité)
+# ─────────────────────────────────────────────────────────────────────────────
+# DAG : Y → Z (note ≥ 4 ou ≤ 2) → S (sélection)
+#
+# Corrélation spurieuse entre note et utilité :
+#   - Typique : utile (1) + positif (4-5★)  OU  inutile (0) + négatif (1-2★)
+#   - OOD     : utile (1) + négatif (1-2★)  OU  inutile (0) + positif (4-5★)
+#
+# Intuition : un modèle ERM apprend "sentiment positif → utile" comme raccourci.
+# Ce raccourci casse au test OOD (reviews utiles mais négatives, reviews inutiles
+# mais positives). IRM devrait ignorer le sentiment car la corrélation
+# varie entre envs.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _load_amazon_books_with_rating(
+    seed: int = 42,
+    n_target: int = 100_000,
+    helpful_threshold: int = 5,
+) -> Tuple[List[str], List[int], List[float]]:
+    """
+    Charge Amazon Books avec rating, équilibré label × rating.
+
+    Collecte dans 4 buckets (label × rating) puis équilibre pour avoir
+    autant de 1★ que de 5★ et autant d'utiles que d'inutiles.
+
+    Returns
+    -------
+    texts   : List[str]
+    labels  : List[int]    – 0=inutile, 1=utile
+    ratings : List[float]  – 1.0 ou 5.0
+    """
+    print(f"Chargement Amazon Books avec rating (streaming, cible {n_target}, "
+          f"seuil helpful_vote ≥ {helpful_threshold})...")
+    ds = load_dataset(
+        "json",
+        data_files="hf://datasets/McAuley-Lab/Amazon-Reviews-2023/"
+                   "raw/review_categories/Books.jsonl",
+        split="train",
+        streaming=True,
+    )
+
+    # 4 buckets : (label, rating) = (0,1★), (0,5★), (1,1★), (1,5★)
+    target_per_bucket = n_target // 4
+    buckets: Dict[Tuple[int, float], List[str]] = {
+        (0, 1.0): [], (0, 5.0): [],
+        (1, 1.0): [], (1, 5.0): [],
+    }
+
+    for row in ds:
+        if all(len(b) >= target_per_bucket for b in buckets.values()):
+            break
+
+        text = (row.get("text") or "").strip()
+        if not text:
+            continue
+        vote = int(row.get("helpful_vote", 0) or 0)
+        rating = float(row.get("rating", 0) or 0)
+
+        if rating not in (1.0, 5.0):
+            continue
+        if vote >= 1 and vote < helpful_threshold:
+            continue
+
+        label = 1 if vote >= helpful_threshold else 0
+        key = (label, rating)
+        if len(buckets[key]) < target_per_bucket:
+            buckets[key].append(text)
+
+    # Équilibrer : min des 4 buckets
+    n_per = min(len(b) for b in buckets.values())
+    print(f"  Buckets : " + ", ".join(
+        f"({'utile' if l else 'inutile'},{r:.0f}★)={len(buckets[(l,r)])}"
+        for l in (0, 1) for r in (1.0, 5.0)))
+    print(f"  Équilibré à {n_per} par bucket → {4 * n_per} total")
+
+    rng = np.random.default_rng(seed)
+    texts:   List[str]   = []
+    labels:  List[int]   = []
+    ratings: List[float] = []
+    for key, bucket in buckets.items():
+        rng.shuffle(bucket)
+        for t in bucket[:n_per]:
+            texts.append(t)
+            labels.append(key[0])
+            ratings.append(key[1])
+
+    perm = rng.permutation(len(texts))
+    texts   = [texts[int(i)]   for i in perm]
+    labels  = [labels[int(i)]  for i in perm]
+    ratings = [ratings[int(i)] for i in perm]
+
+    n_pos = sum(1 for r in ratings if r == 5.0)
+    n_neg = sum(1 for r in ratings if r == 1.0)
+    print(f"  Notes : {n_pos} positives (5★), {n_neg} négatives (1★)")
+    return texts, labels, ratings
+
+
+def _is_typical_sentiment(label: int, rating: float) -> bool:
+    """Typique = utile + 5★ OU inutile + 1★."""
+    if label == 1:
+        return rating == 5.0
+    else:
+        return rating == 1.0
+
+
+def _is_cross_sentiment(label: int, rating: float) -> bool:
+    """Cross = utile + 1★ OU inutile + 5★."""
+    if label == 1:
+        return rating == 1.0
+    else:
+        return rating == 5.0
+
+
+def build_envs_amazon_sentiment_selection(
+    train_p_select: List[float],
+    seed: int = 1,
+    val_frac: float = 0.1,
+    label_flip: float = 0.0,
+    bert_model: str = "bert-base-uncased",
+    max_length: int = 512,
+    device: str = "cpu",
+    pooling: str = "mean",
+    n_target: int = 100_000,
+) -> Tuple[List[Env], List[Env], Env]:
+    """
+    Amazon Books — sélection par sentiment (note) comme proxy d'utilité.
+
+    DAG : Y → Z (sentiment positif/négatif) → S (sélection)
+
+    Typique  : utile (1) + positif (4-5★), OU inutile (0) + négatif (1-2★).
+    OOD      : utile (1) + négatif (1-2★), OU inutile (0) + positif (4-5★).
+
+    Le raccourci « sentiment positif ↔ utile » est très fort dans les envs
+    de train mais casse au test OOD.
+
+    Parameters
+    ----------
+    train_p_select : List[float]
+        Proba de garder un exemple typique par env.
+    n_target : int
+        Nombre total de reviews à charger (équilibré 50/50 en label).
+    """
+    print("Chargement Amazon Books (sentiment selection)...")
+    all_texts, all_labels, all_ratings = _load_amazon_books_with_rating(
+        seed=seed, n_target=n_target,
+    )
+    n_total = len(all_texts)
+    print(f"Dataset : {n_total} reviews")
+
+    rng = np.random.default_rng(seed)
+    indices = rng.permutation(n_total)
+    n_envs = len(train_p_select)
+    spe = n_total // n_envs
+
+    ood_texts:  List[str] = []
+    ood_labels: List[int] = []
+    train_envs: List[Env] = []
+    val_envs:   List[Env] = []
+
+    for i, p_select in enumerate(train_p_select):
+        print(f"\n=== Env {i} (p_select={p_select:.0%}) ===")
+        env_start = i * spe
+        env_end   = (i + 1) * spe if i < n_envs - 1 else n_total
+        env_indices = indices[env_start:env_end]
+
+        env_texts   = [all_texts[int(j)]   for j in env_indices]
+        env_labels  = [all_labels[int(j)]  for j in env_indices]
+        env_ratings = [all_ratings[int(j)] for j in env_indices]
+
+        selected_texts:  List[str] = []
+        selected_labels: List[int] = []
+        n_typical = 0
+        n_cross   = 0
+
+        for text, label, rating in zip(env_texts, env_labels, env_ratings):
+            if _is_typical_sentiment(label, rating):
+                n_typical += 1
+                if rng.uniform() < p_select:
+                    selected_texts.append(text)
+                    selected_labels.append(label)
+            elif i == 0:
+                # Collecter les OOD cross du premier env uniquement
+                if _is_cross_sentiment(label, rating):
+                    n_cross += 1
+                    ood_texts.append(text)
+                    ood_labels.append(label)
+
+        print(f"  Typiques dans partition : {n_typical}")
+        if i == 0:
+            print(f"  Cross (OOD candidats)  : {n_cross}")
+        print(f"  Sélectionné : {len(selected_texts)} reviews")
+
+        sel_labels_arr = np.array(selected_labels)
+        n_sel = len(selected_texts)
+        n_val = int(n_sel * val_frac)
+        idx_sh = rng.permutation(n_sel)
+        tr_idx, va_idx = idx_sh[n_val:], idx_sh[:n_val]
+
+        # ─── Train ───
+        tr_texts  = [selected_texts[j] for j in tr_idx]
+        tr_labels = sel_labels_arr[tr_idx].copy()
+        if label_flip > 0.0:
+            rng_tf = np.random.default_rng(seed + 9000 + i)
+            tr_labels[rng_tf.uniform(size=len(tr_labels)) < label_flip] ^= 1
+        X_tr = tokenize_and_embed_with_bert(
+            tr_texts, bert_model, max_length, device, pooling)
+        train_envs.append(Env(
+            torch.from_numpy(X_tr),
+            torch.from_numpy(tr_labels.reshape(-1, 1).astype(np.float32)),
+            meta={"p_select": p_select, "kind": "amazon_sentiment_selection_train",
+                  "env_id": i, "label_flip": label_flip, "n_samples": len(X_tr)}))
+
+        # ─── Val ───
+        va_texts  = [selected_texts[j] for j in va_idx]
+        va_labels = sel_labels_arr[va_idx].copy()
+        if label_flip > 0.0:
+            rng_vf = np.random.default_rng(seed + 10000 + i)
+            va_labels[rng_vf.uniform(size=len(va_labels)) < label_flip] ^= 1
+        X_va = tokenize_and_embed_with_bert(
+            va_texts, bert_model, max_length, device, pooling)
+        val_envs.append(Env(
+            torch.from_numpy(X_va),
+            torch.from_numpy(va_labels.reshape(-1, 1).astype(np.float32)),
+            meta={"p_select": p_select, "kind": "amazon_sentiment_selection_val",
+                  "env_id": i, "n_samples": len(X_va)}))
+
+    # ─── Test OOD ───
+    print(f"\n=== Test OOD (cross sentiment) — {len(ood_texts)} reviews ===")
+    ood_labels_arr = np.array(ood_labels)
+    n0_ood = int((ood_labels_arr == 0).sum())
+    n1_ood = int((ood_labels_arr == 1).sum())
+    print(f"  Inutiles+positif : {n0_ood}, Utiles+négatif : {n1_ood}")
+    X_test = tokenize_and_embed_with_bert(
+        ood_texts, bert_model, max_length, device, pooling)
+    test_env = Env(
+        torch.from_numpy(X_test),
+        torch.from_numpy(ood_labels_arr.reshape(-1, 1).astype(np.float32)),
+        meta={"kind": "amazon_sentiment_selection_test_ood",
+              "n_samples": len(X_test)})
+
+    print(f"\n✅ Amazon Books Sentiment Selection — Done!")
+    print(f"   Train : {sum(e.X.shape[0] for e in train_envs)} | "
+          f"Val : {sum(e.X.shape[0] for e in val_envs)} | Test : {test_env.X.shape[0]}")
     return train_envs, val_envs, test_env

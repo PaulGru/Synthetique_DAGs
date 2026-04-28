@@ -41,6 +41,18 @@ def make_nlp_parser() -> argparse.ArgumentParser:
         'nlp_sst2_selection',
         'nlp_sst2_genre_selection',
         'nlp_sst2_conf_varying_proxy',
+        # ── IMDB (anti-causal : Y → X, textes longs) ──
+        'nlp_imdb_conf_varying_proxy',
+        'nlp_imdb_semi_anti_causal',
+        'nlp_imdb_selection',
+        'nlp_imdb_size_selection',
+        # ── Amazon Books (causal : X → Y, utilité de la review) ──
+        'nlp_amazon_semi_anti_causal',
+        'nlp_amazon_size_selection',
+        'nlp_amazon_conf_varying_proxy',
+        'nlp_amazon_rating_natural',
+        'nlp_amazon_keyword_selection',
+        'nlp_amazon_sentiment_selection',
     ])
 
     # ---- BERT config ----
@@ -96,6 +108,20 @@ def make_nlp_parser() -> argparse.ArgumentParser:
                    help='Prevalence of C per train env (conf_varying_pc)')
     p.add_argument('--nlp_conf_pc_test', type=float, default=0.1,
                    help='Prevalence of C for OOD test (conf_varying_pc)')
+
+    # ---- IMDB class imbalance ----
+    p.add_argument('--nlp_imdb_class_ratio_train', type=float, nargs='+', default=None,
+                   help='Fraction of positives per train env for IMDB datasets '
+                        '(ex: 0.2 0.8). None = balanced (no resampling).')
+    p.add_argument('--nlp_imdb_class_ratio_test', type=float, default=None,
+                   help='Fraction of positives in test set for IMDB datasets '
+                        '(ex: 0.5). None = no resampling.')
+
+    # ---- Amazon Books ----
+    p.add_argument('--nlp_amazon_n_target', type=int, default=100_000,
+                   help='Number of Amazon Books reviews to load (balanced, default 100k)')
+    p.add_argument('--nlp_amazon_n_per_group', type=int, default=20_000,
+                   help='Reviews per rating group for rating_natural (balanced, default 20k)')
 
     # ---- Output ----
     p.add_argument('--plot_dir', type=str, default=None,
