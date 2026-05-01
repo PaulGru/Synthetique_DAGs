@@ -46,6 +46,7 @@ def make_nlp_parser() -> argparse.ArgumentParser:
         'nlp_imdb_semi_anti_causal',
         'nlp_imdb_selection',
         'nlp_imdb_size_selection',
+        'nlp_imdb_br_selection',
         # ── Amazon Books (causal : X → Y, utilité de la review) ──
         'nlp_amazon_semi_anti_causal',
         'nlp_amazon_size_selection',
@@ -89,6 +90,15 @@ def make_nlp_parser() -> argparse.ArgumentParser:
     p.add_argument('--nlp_n_ood_per_class', type=int, default=250,
                    help='Max OOD examples per class (agnews_source_selection)')
 
+    # ---- AG News class imbalance (4 classes) ----
+    p.add_argument('--nlp_agnews_class_dist_train', type=float, nargs='+', default=None,
+                   help='Target class distribution per train env for AG News (4 floats per env, '
+                        'flattened). Ex for 2 envs: 0.1 0.1 0.4 0.4 0.2 0.2 0.3 0.3. '
+                        'None = balanced (no resampling).')
+    p.add_argument('--nlp_agnews_class_dist_test', type=float, nargs='+', default=None,
+                   help='Target class distribution for AG News test set (4 floats). '
+                        'Ex: 0.4 0.4 0.1 0.1. None = no resampling.')
+
     # ---- Confounding variants ----
     p.add_argument('--nlp_conf_a_train', type=float, nargs='+', default=[0.01, 0.11],
                    help='Proxy noise a_e per train env (conf_varying_proxy)')
@@ -122,6 +132,14 @@ def make_nlp_parser() -> argparse.ArgumentParser:
                    help='Number of Amazon Books reviews to load (balanced, default 100k)')
     p.add_argument('--nlp_amazon_n_per_group', type=int, default=20_000,
                    help='Reviews per rating group for rating_natural (balanced, default 20k)')
+
+    # ---- Amazon class imbalance ----
+    p.add_argument('--nlp_amazon_class_ratio_train', type=float, nargs='+', default=None,
+                   help='Fraction of positives per train env for Amazon datasets '
+                        '(ex: 0.2 0.3). None = balanced (no resampling).')
+    p.add_argument('--nlp_amazon_class_ratio_test', type=float, default=None,
+                   help='Fraction of positives in test set for Amazon datasets '
+                        '(ex: 0.9). None = no resampling.')
 
     # ---- Output ----
     p.add_argument('--plot_dir', type=str, default=None,

@@ -227,7 +227,7 @@ def train_irm(
     mlp_hidden: int = 512,
     mlp_dropout: float = 0.1,
 ):
-    history = {'step': [], 'loss': [], 'penalty': [], 'train_acc': [], 'val_acc': [], 'test_acc': [], 'w_z': [], 'w_y': [], 'w_full': []}
+    history = {'step': [], 'loss': [], 'objective': [], 'penalty': [], 'train_acc': [], 'val_acc': [], 'test_acc': [], 'w_z': [], 'w_y': [], 'w_full': []}
 
     multiclass = n_classes > 2
 
@@ -326,8 +326,14 @@ def train_irm(
             val_acc = compute_accuracy(phi, val_envs, device=str(device)) if val_envs else 0.0
             test_acc = compute_accuracy(phi, [test_env], device=str(device)) if test_env else 0.0
             
+            # Store the objective actually optimized (after normalization)
+            if lambda_t > 1.0:
+                obj_true = emp_risk.item() / lambda_t + penalty.item()
+            else:
+                obj_true = emp_risk.item() + lambda_t * penalty.item()
             history['step'].append(t+1)
             history['loss'].append(emp_risk.item())
+            history['objective'].append(obj_true)
             history['penalty'].append(penalty.item())
             history['train_acc'].append(train_acc)
             history['val_acc'].append(val_acc)
@@ -355,6 +361,6 @@ def train_irm(
             else:
                 history['w_z'].append(0.0); history['w_y'].append(0.0)
 
-            evaluate_and_log_step("IRM", t+1, phi, envs, val_envs, test_env, device=str(device), loss_val=float(emp_risk.item()))
+            evaluate_and_log_step("IRM", t+1, phi, envs, val_envs, test_env, device=str(device), loss_val=obj_true)
 
     return phi, history

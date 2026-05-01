@@ -2048,6 +2048,8 @@ def build_envs_ag_news_source_selection(
     max_length: int = 256,
     device: str = "cpu",
     pooling: str = "mean",
+    class_dist_train: Optional[List[List[float]]] = None,
+    class_dist_test: Optional[List[float]] = None,
 ) -> Tuple[List[Env], List[Env], Env]:
     """
     Construit des environnements AG News multiclasse avec selection bias.
@@ -2152,6 +2154,11 @@ def build_envs_ag_news_source_selection(
         dist = {AG_NEWS_CLASS_NAMES[c]: int((sel_arr == c).sum()) for c in range(4)}
         print(f"  Sélectionné (Sports ≤ max autre classe) : {len(sel_texts)} → {dist}")
 
+        if class_dist_train is not None:
+            rng_sub = np.random.default_rng(seed + 20000 + i)
+            sel_texts, sel_arr = _subsample_to_class_dist(sel_texts, sel_arr, class_dist_train[i], rng_sub)
+            sel_labels = sel_arr.tolist()
+
         # ── Split train / val ──────────────────────────────────────────────
         n_sel = len(sel_texts)
         idx = rng.permutation(n_sel)
@@ -2206,6 +2213,12 @@ def build_envs_ag_news_source_selection(
     ood_arr  = np.array(ood_labels_final)
     ood_dist = {AG_NEWS_CLASS_NAMES[c]: int((ood_arr == c).sum()) for c in range(4)}
     print(f"  {len(ood_texts_final)} articles OOD → {ood_dist}")
+
+    if class_dist_test is not None:
+        rng_sub_t = np.random.default_rng(seed + 22000)
+        ood_texts_final, ood_arr = _subsample_to_class_dist(ood_texts_final, ood_arr, class_dist_test, rng_sub_t)
+        ood_labels_final = ood_arr.tolist()
+
     print(f"  Signal spurieux Z absent → ERM piégé, IRM attendu robuste.")
 
     X_ood = tokenize_and_embed_with_bert(ood_texts_final, bert_model, max_length, device, pooling)
@@ -2305,6 +2318,8 @@ def build_envs_ag_news_semi_anti_causal(
     max_length: int = 256,
     device: str = "cpu",
     pooling: str = "mean",
+    class_dist_train: Optional[List[List[float]]] = None,
+    class_dist_test: Optional[List[float]] = None,
 ) -> Tuple[List[Env], List[Env], Env]:
     """
     AG News multiclasse — expérience semi anti-causale par injection de tokens.
@@ -2379,6 +2394,10 @@ def build_envs_ag_news_semi_anti_causal(
         texts  = [all_texts[int(j)]  for j in env_idx]
         labels = np.array([all_labels[int(j)] for j in env_idx], dtype=np.int64)
 
+        if class_dist_train is not None:
+            rng_sub = np.random.default_rng(seed + 20000 + i)
+            texts, labels = _subsample_to_class_dist(texts, labels, class_dist_train[i], rng_sub)
+
         # Label flip multiclasse (bruitage signal causal texte→label)
         if label_flip > 0:
             rng_flip = np.random.default_rng(seed + i * 13 + 1)
@@ -2417,6 +2436,10 @@ def build_envs_ag_news_semi_anti_causal(
         val_texts  = [all_texts[int(j)]  for j in val_indices]
         val_labels = np.array([all_labels[int(j)] for j in val_indices], dtype=np.int64)
 
+        if class_dist_train is not None:
+            rng_sub_v = np.random.default_rng(seed + 21000 + i)
+            val_texts, val_labels = _subsample_to_class_dist(val_texts, val_labels, class_dist_train[i], rng_sub_v)
+
         # Même label_flip multiclasse que le train
         if label_flip > 0:
             rng_val_flip = np.random.default_rng(seed + 5000 + i + 1)
@@ -2449,6 +2472,10 @@ def build_envs_ag_news_semi_anti_causal(
 
     test_texts  = [all_texts[int(j)]  for j in test_indices]
     test_labels = np.array([all_labels[int(j)] for j in test_indices], dtype=np.int64)
+
+    if class_dist_test is not None:
+        rng_sub_t = np.random.default_rng(seed + 22000)
+        test_texts, test_labels = _subsample_to_class_dist(test_texts, test_labels, class_dist_test, rng_sub_t)
 
     rng_test = np.random.default_rng(seed + 777)
     test_texts_mod = [
@@ -2832,6 +2859,62 @@ IMDB_NEGATIVE_WORDS: List[str] = [
 
 
 # =============================================================================
+# Helper multiclasse : sous-échantillonnage pour déséquilibre de classes (N classes)
+# =============================================================================
+
+def _subsample_to_class_dist(
+    texts: List[str],
+    labels: np.ndarray,
+    target_dist: List[float],
+    rng: np.random.Generator,
+    n_classes: int = 4,
+) -> Tuple[List[str], np.ndarray]:
+    """
+    Sous-échantillonne (texts, labels) pour que P(Y=c) ≈ target_dist[c].
+
+    Garde tous les exemples de la classe au ratio le plus contraint et
+    sous-échantillonne les autres proportionnellement.
+
+    Parameters
+    ----------
+    target_dist : List[float]  Distribution cible, ex [0.1, 0.5, 0.2, 0.2].
+                               Doit sommer à 1.0 (normalisé sinon).
+    n_classes   : int          Nombre de classes.
+    """
+    target_dist = np.array(target_dist, dtype=np.float64)
+    target_dist /= target_dist.sum()  # normaliser
+
+    # Indices par classe
+    class_idx = {c: np.where(labels == c)[0] for c in range(n_classes)}
+    class_counts = {c: len(class_idx[c]) for c in range(n_classes)}
+
+    # Trouver la taille totale max atteignable
+    # Pour chaque classe c : n_total_max = class_counts[c] / target_dist[c]
+    # La contrainte la plus serrée détermine n_total
+    n_total = int(min(
+        class_counts[c] / target_dist[c]
+        for c in range(n_classes)
+        if target_dist[c] > 0
+    ))
+
+    kept_indices = []
+    for c in range(n_classes):
+        n_keep = int(round(n_total * target_dist[c]))
+        n_keep = min(n_keep, class_counts[c])
+        if n_keep > 0:
+            chosen = rng.choice(class_idx[c], size=n_keep, replace=False)
+            kept_indices.append(chosen)
+
+    kept = rng.permutation(np.concatenate(kept_indices))
+    texts_out  = [texts[int(j)] for j in kept]
+    labels_out = labels[kept]
+    actual = {c: float((labels_out == c).mean()) for c in range(n_classes)}
+    print(f"  Sous-échantillonnage multiclasse → {len(kept)} samples  "
+          f"(effectif : {actual}, cible : {dict(enumerate(target_dist.tolist()))})")
+    return texts_out, labels_out
+
+
+# =============================================================================
 # IMDB — helper : sous-échantillonnage pour déséquilibre de classes
 # =============================================================================
 
@@ -3184,13 +3267,17 @@ def build_envs_imdb_size_selection(
     class_ratio_test: Optional[float] = None,
 ) -> Tuple[List[Env], List[Env], Env]:
     """
-    IMDB — sélection par longueur de critique.
+    IMDB — sélection par longueur de critique (pool partagé).
 
     DAG : Y → Z (longueur) → S (sélection d'entraînement)
 
-    Typique  : négatif COURT (< Q1 des négatifs) ou positif LONG (> Q3 des positifs).
-    OOD      : extrêmes opposés — négatif très long (> Q3 des positifs),
-               positif très court (< Q1 des négatifs).
+    Les seuils sont calculés une seule fois sur le dataset complet.
+    Les extrêmes OOD sont mis de côté, puis chaque env tire indépendamment
+    dans le pool restant avec sa propre probabilité p_select.
+
+    Typique  : négatif COURT (< t1) ou positif LONG (> t2).
+    OOD      : extrêmes opposés — négatif très long (> t2),
+               positif très court (< t1).
 
     Parameters
     ----------
@@ -3207,44 +3294,46 @@ def build_envs_imdb_size_selection(
     n_total = len(all_texts)
     print(f"Dataset : {n_total} reviews")
 
-    rng = np.random.default_rng(seed)
-    indices = rng.permutation(n_total)
-    n_envs = len(train_p_select)
-    spe = n_total // n_envs
+    # Seuils calculés sur le dataset complet (plus stable)
+    t1, t2 = compute_size_thresholds(all_texts, all_labels, threshold_method)
+    print(f"Seuils globaux : t1={t1}, t2={t2} (méthode={threshold_method})")
 
+    # Séparer extrêmes (OOD test) du pool d'entraînement
     extreme_texts:  List[str] = []
     extreme_labels: List[int] = []
+    pool_texts:  List[str] = []
+    pool_labels: List[int] = []
+
+    for text, label in zip(all_texts, all_labels):
+        text_len = len(text)
+        if label == 0 and text_len > t2:
+            extreme_texts.append(text)
+            extreme_labels.append(label)
+        elif label == 1 and text_len < t1:
+            extreme_texts.append(text)
+            extreme_labels.append(label)
+        else:
+            pool_texts.append(text)
+            pool_labels.append(label)
+
+    print(f"Pool d'entraînement : {len(pool_texts)} reviews | "
+          f"Extrêmes OOD : {len(extreme_texts)} reviews")
+
     train_envs: List[Env] = []
     val_envs:   List[Env] = []
 
     for i, p_select in enumerate(train_p_select):
         print(f"\n=== Env {i} (p_select={p_select:.0%}) ===")
-        env_start  = i * spe
-        env_end    = (i + 1) * spe if i < n_envs - 1 else n_total
-        env_indices = indices[env_start:env_end]
-
-        env_texts  = [all_texts[int(j)]  for j in env_indices]
-        env_labels = [all_labels[int(j)] for j in env_indices]
-
-        t1, t2 = compute_size_thresholds(env_texts, env_labels, threshold_method)
+        rng_env = np.random.default_rng(seed + 5000 + i)
 
         selected_texts:  List[str] = []
         selected_labels: List[int] = []
 
-        for text, label in zip(env_texts, env_labels):
-            text_len = len(text)
+        for text, label in zip(pool_texts, pool_labels):
             if is_typical_by_size(text, label, t1, t2):
-                if rng.uniform() < p_select:
+                if rng_env.uniform() < p_select:
                     selected_texts.append(text)
                     selected_labels.append(label)
-            elif i == 0:
-                # Extrêmes opposés : négatif très long OU positif très court
-                if label == 0 and text_len > t2:
-                    extreme_texts.append(text)
-                    extreme_labels.append(label)
-                elif label == 1 and text_len < t1:
-                    extreme_texts.append(text)
-                    extreme_labels.append(label)
 
         print(f"  Sélectionné : {len(selected_texts)} reviews typiques")
 
@@ -3257,7 +3346,7 @@ def build_envs_imdb_size_selection(
 
         n_sel = len(sel_texts_sz)
         n_val = int(n_sel * val_frac)
-        idx_sh = rng.permutation(n_sel)
+        idx_sh = rng_env.permutation(n_sel)
         tr_idx, va_idx = idx_sh[n_val:], idx_sh[:n_val]
 
         tr_texts  = [sel_texts_sz[j]  for j in tr_idx]
@@ -3298,6 +3387,170 @@ def build_envs_imdb_size_selection(
                          "n_samples": len(X_test), "description": "extreme_opposite_by_size"})
 
     print(f"\n✅ IMDB Size Selection — Done!")
+    print(f"   Train : {sum(e.X.shape[0] for e in train_envs)} | "
+          f"Val : {sum(e.X.shape[0] for e in val_envs)} | Test : {test_env.X.shape[0]}")
+    return train_envs, val_envs, test_env
+
+
+# =============================================================================
+# IMDB — 4) Selection by HTML <br> tags
+# =============================================================================
+# DAG : Y → Z (présence de balises <br>) → S (sélection d'entraînement)
+#
+# Observation dans IMDB brut : certaines critiques contiennent des balises HTML
+# <br /> (line breaks), d'autres non.  On utilise cette caractéristique de
+# formatage comme corrélation SPURIEUSE avec le sentiment.
+#
+# Typique : négatif AVEC <br>, positif SANS <br>
+# OOD     : relation inversée — négatif SANS <br>, positif AVEC <br>
+# =============================================================================
+
+def _has_br_tag(text: str) -> bool:
+    """Vérifie si un texte contient au moins une balise <br> (ou <br />)."""
+    return "<br" in text.lower()
+
+
+def build_envs_imdb_br_selection(
+    train_p_select: List[float],
+    seed: int,
+    val_frac: float = 0.1,
+    label_flip: float = 0.0,
+    bert_model: str = "bert-base-uncased",
+    max_length: int = 512,
+    device: str = "cpu",
+    pooling: str = "mean",
+    class_ratio_train: Optional[List[float]] = None,
+    class_ratio_test: Optional[float] = None,
+) -> Tuple[List[Env], List[Env], Env]:
+    """
+    IMDB — sélection par présence de balises HTML <br> (pool partagé).
+
+    DAG : Y → Z (présence <br>) → S (sélection d'entraînement)
+
+    Typique  : négatif AVEC balises <br>, positif SANS balises <br>.
+    OOD      : relation inversée — négatif SANS <br>, positif AVEC <br>.
+
+    Chaque env tire indépendamment dans le pool typique avec p_select.
+
+    Parameters
+    ----------
+    train_p_select   : List[float]           Proba de garder un exemple typique par env.
+    val_frac         : float                 Fraction validation.
+    label_flip       : float                 Taux de bruit symétrique sur les labels.
+    max_length       : int                   Max tokens BERT (défaut 512).
+    class_ratio_train: Optional[List[float]] Fraction de positifs par env.
+    class_ratio_test : Optional[float]       Fraction de positifs au test.
+    """
+    print("Chargement du dataset IMDB (sélection par balises <br>)...")
+    all_texts, all_labels = load_imdb_dataset(seed=seed)
+    n_total = len(all_texts)
+    print(f"Dataset : {n_total} reviews")
+
+    # Catégoriser : typique, OOD, ou ni l'un ni l'autre
+    pool_texts:  List[str] = []
+    pool_labels: List[int] = []
+    ood_texts:   List[str] = []
+    ood_labels:  List[int] = []
+
+    n_neg_br = 0
+    n_neg_no_br = 0
+    n_pos_br = 0
+    n_pos_no_br = 0
+
+    for text, label in zip(all_texts, all_labels):
+        has_br = _has_br_tag(text)
+        if label == 0:  # négatif
+            if has_br:
+                n_neg_br += 1
+                pool_texts.append(text)    # typique : négatif + <br>
+                pool_labels.append(label)
+            else:
+                n_neg_no_br += 1
+                ood_texts.append(text)     # OOD : négatif SANS <br>
+                ood_labels.append(label)
+        else:  # positif
+            if not has_br:
+                n_pos_no_br += 1
+                pool_texts.append(text)    # typique : positif + pas de <br>
+                pool_labels.append(label)
+            else:
+                n_pos_br += 1
+                ood_texts.append(text)     # OOD : positif AVEC <br>
+                ood_labels.append(label)
+
+    print(f"  Négatifs : {n_neg_br} avec <br>, {n_neg_no_br} sans <br>")
+    print(f"  Positifs : {n_pos_br} avec <br>, {n_pos_no_br} sans <br>")
+    print(f"  Pool typique : {len(pool_texts)} | OOD : {len(ood_texts)}")
+
+    train_envs: List[Env] = []
+    val_envs:   List[Env] = []
+
+    for i, p_select in enumerate(train_p_select):
+        print(f"\n=== Env {i} (p_select={p_select:.0%}) ===")
+        rng_env = np.random.default_rng(seed + 6000 + i)
+
+        selected_texts:  List[str] = []
+        selected_labels: List[int] = []
+
+        for text, label in zip(pool_texts, pool_labels):
+            if rng_env.uniform() < p_select:
+                selected_texts.append(text)
+                selected_labels.append(label)
+
+        print(f"  Sélectionné : {len(selected_texts)} reviews typiques")
+
+        sel_texts_br  = selected_texts
+        sel_labels_br = np.array(selected_labels)
+        if class_ratio_train is not None:
+            rng_sub = np.random.default_rng(seed + 20000 + i)
+            sel_texts_br, sel_labels_br = _subsample_to_ratio(
+                sel_texts_br, sel_labels_br, class_ratio_train[i], rng_sub)
+
+        n_sel = len(sel_texts_br)
+        n_val = int(n_sel * val_frac)
+        idx_sh = rng_env.permutation(n_sel)
+        tr_idx, va_idx = idx_sh[n_val:], idx_sh[:n_val]
+
+        tr_texts  = [sel_texts_br[j]  for j in tr_idx]
+        tr_labels = sel_labels_br[tr_idx].copy()
+        if label_flip > 0.0:
+            rng_tf = np.random.default_rng(seed + 7000 + i)
+            tr_labels[rng_tf.uniform(size=len(tr_labels)) < label_flip] ^= 1
+        X_tr = tokenize_and_embed_with_bert(tr_texts, bert_model, max_length, device, pooling)
+        train_envs.append(Env(torch.from_numpy(X_tr),
+                              torch.from_numpy(tr_labels.reshape(-1, 1).astype(np.float32)),
+                              meta={"p_select": p_select, "kind": "imdb_br_selection_train",
+                                    "env_id": i, "label_flip": label_flip,
+                                    "n_samples": len(X_tr)}))
+
+        va_texts  = [sel_texts_br[j]  for j in va_idx]
+        va_labels = sel_labels_br[va_idx].copy()
+        if label_flip > 0.0:
+            rng_vf = np.random.default_rng(seed + 8000 + i)
+            va_labels[rng_vf.uniform(size=len(va_labels)) < label_flip] ^= 1
+        X_va = tokenize_and_embed_with_bert(va_texts, bert_model, max_length, device, pooling)
+        val_envs.append(Env(torch.from_numpy(X_va),
+                            torch.from_numpy(va_labels.reshape(-1, 1).astype(np.float32)),
+                            meta={"p_select": p_select, "kind": "imdb_br_selection_val",
+                                  "env_id": i, "label_flip": label_flip,
+                                  "n_samples": len(X_va)}))
+
+    print(f"\n=== Test OOD (relation <br> inversée) — {len(ood_texts)} reviews ===")
+    print(f"  Négatifs SANS <br> + positifs AVEC <br> → signal spurieux inversé")
+    ood_texts_final  = ood_texts
+    ood_labels_arr   = np.array(ood_labels)
+    if class_ratio_test is not None:
+        rng_sub_t = np.random.default_rng(seed + 22000)
+        ood_texts_final, ood_labels_arr = _subsample_to_ratio(
+            ood_texts_final, ood_labels_arr, class_ratio_test, rng_sub_t)
+    X_test = tokenize_and_embed_with_bert(ood_texts_final, bert_model, max_length, device, pooling)
+    test_env = Env(torch.from_numpy(X_test),
+                   torch.from_numpy(ood_labels_arr.reshape(-1, 1).astype(np.float32)),
+                   meta={"kind": "imdb_br_selection_test_ood",
+                         "n_samples": len(X_test),
+                         "description": "br_tag_inverted"})
+
+    print(f"\n✅ IMDB BR Selection — Done!")
     print(f"   Train : {sum(e.X.shape[0] for e in train_envs)} | "
           f"Val : {sum(e.X.shape[0] for e in val_envs)} | Test : {test_env.X.shape[0]}")
     return train_envs, val_envs, test_env
@@ -4016,6 +4269,8 @@ def build_envs_amazon_rating_natural(
     pooling: str = "mean",
     n_per_group: int = 20_000,
     helpful_threshold: int = 5,
+    class_ratio_train: Optional[List[float]] = None,
+    class_ratio_test: Optional[float] = None,
 ) -> Tuple[List[Env], List[Env], Env]:
     """
     Expérience naturelle : envs définis par la note (rating).
@@ -4041,6 +4296,10 @@ def build_envs_amazon_rating_natural(
     for i, grp in enumerate(("5", "3-4")):
         texts, labels_list = groups[grp]
         labels = np.array(labels_list)
+
+        if class_ratio_train is not None:
+            rng_sub = np.random.default_rng(seed + 20000 + i)
+            texts, labels = _subsample_to_ratio(texts, labels, class_ratio_train[i], rng_sub)
 
         n = len(texts)
         n_val = int(n * val_frac)
@@ -4090,6 +4349,10 @@ def build_envs_amazon_rating_natural(
     # ── Test OOD : 1★ ──
     test_texts, test_labels_list = groups["1"]
     test_labels = np.array(test_labels_list)
+    if class_ratio_test is not None:
+        rng_sub_t = np.random.default_rng(seed + 22000)
+        test_texts, test_labels = _subsample_to_ratio(
+            test_texts, test_labels, class_ratio_test, rng_sub_t)
     lens_0t = [len(test_texts[k]) for k in range(len(test_texts)) if test_labels[k] == 0]
     lens_1t = [len(test_texts[k]) for k in range(len(test_texts)) if test_labels[k] == 1]
     print(f"\n=== Test OOD (1★) — {len(test_texts)} reviews ===")
@@ -4179,6 +4442,8 @@ def build_envs_amazon_keyword_selection(
     pooling: str = "mean",
     n_target: int = 100_000,
     ood_strategy: str = "cross_label",
+    class_ratio_train: Optional[List[float]] = None,
+    class_ratio_test: Optional[float] = None,
 ) -> Tuple[List[Env], List[Env], Env]:
     """
     Amazon Books — sélection par lexique de recommandation.
@@ -4243,14 +4508,20 @@ def build_envs_amazon_keyword_selection(
 
         print(f"  Sélectionné : {len(selected_texts)} reviews typiques")
 
+        sel_texts_arr  = selected_texts
         sel_labels_arr = np.array(selected_labels)
-        n_sel = len(selected_texts)
+        if class_ratio_train is not None:
+            rng_sub = np.random.default_rng(seed + 20000 + i)
+            sel_texts_arr, sel_labels_arr = _subsample_to_ratio(
+                sel_texts_arr, sel_labels_arr, class_ratio_train[i], rng_sub)
+
+        n_sel = len(sel_texts_arr)
         n_val = int(n_sel * val_frac)
         idx_sh = rng.permutation(n_sel)
         tr_idx, va_idx = idx_sh[n_val:], idx_sh[:n_val]
 
         # ─── Train ───
-        tr_texts  = [selected_texts[j] for j in tr_idx]
+        tr_texts  = [sel_texts_arr[j] for j in tr_idx]
         tr_labels = sel_labels_arr[tr_idx].copy()
         if label_flip > 0.0:
             rng_tf = np.random.default_rng(seed + 9000 + i)
@@ -4264,7 +4535,7 @@ def build_envs_amazon_keyword_selection(
                   "env_id": i, "label_flip": label_flip, "n_samples": len(X_tr)}))
 
         # ─── Val ───
-        va_texts  = [selected_texts[j] for j in va_idx]
+        va_texts  = [sel_texts_arr[j] for j in va_idx]
         va_labels = sel_labels_arr[va_idx].copy()
         if label_flip > 0.0:
             rng_vf = np.random.default_rng(seed + 10000 + i)
@@ -4279,9 +4550,14 @@ def build_envs_amazon_keyword_selection(
 
     # ─── Test OOD ───
     print(f"\n=== Test OOD ({ood_strategy}) — {len(ood_texts)} reviews ===")
-    ood_labels_arr = np.array(ood_labels)
+    ood_texts_final  = ood_texts
+    ood_labels_arr   = np.array(ood_labels)
+    if class_ratio_test is not None:
+        rng_sub_t = np.random.default_rng(seed + 22000)
+        ood_texts_final, ood_labels_arr = _subsample_to_ratio(
+            ood_texts_final, ood_labels_arr, class_ratio_test, rng_sub_t)
     X_test = tokenize_and_embed_with_bert(
-        ood_texts, bert_model, max_length, device, pooling)
+        ood_texts_final, bert_model, max_length, device, pooling)
     test_env = Env(
         torch.from_numpy(X_test),
         torch.from_numpy(ood_labels_arr.reshape(-1, 1).astype(np.float32)),
@@ -4418,6 +4694,8 @@ def build_envs_amazon_sentiment_selection(
     device: str = "cpu",
     pooling: str = "mean",
     n_target: int = 100_000,
+    class_ratio_train: Optional[List[float]] = None,
+    class_ratio_test: Optional[float] = None,
 ) -> Tuple[List[Env], List[Env], Env]:
     """
     Amazon Books — sélection par sentiment (note) comme proxy d'utilité.
@@ -4487,14 +4765,20 @@ def build_envs_amazon_sentiment_selection(
             print(f"  Cross (OOD candidats)  : {n_cross}")
         print(f"  Sélectionné : {len(selected_texts)} reviews")
 
+        sel_texts_arr  = selected_texts
         sel_labels_arr = np.array(selected_labels)
-        n_sel = len(selected_texts)
+        if class_ratio_train is not None:
+            rng_sub = np.random.default_rng(seed + 20000 + i)
+            sel_texts_arr, sel_labels_arr = _subsample_to_ratio(
+                sel_texts_arr, sel_labels_arr, class_ratio_train[i], rng_sub)
+
+        n_sel = len(sel_texts_arr)
         n_val = int(n_sel * val_frac)
         idx_sh = rng.permutation(n_sel)
         tr_idx, va_idx = idx_sh[n_val:], idx_sh[:n_val]
 
         # ─── Train ───
-        tr_texts  = [selected_texts[j] for j in tr_idx]
+        tr_texts  = [sel_texts_arr[j] for j in tr_idx]
         tr_labels = sel_labels_arr[tr_idx].copy()
         if label_flip > 0.0:
             rng_tf = np.random.default_rng(seed + 9000 + i)
@@ -4508,7 +4792,7 @@ def build_envs_amazon_sentiment_selection(
                   "env_id": i, "label_flip": label_flip, "n_samples": len(X_tr)}))
 
         # ─── Val ───
-        va_texts  = [selected_texts[j] for j in va_idx]
+        va_texts  = [sel_texts_arr[j] for j in va_idx]
         va_labels = sel_labels_arr[va_idx].copy()
         if label_flip > 0.0:
             rng_vf = np.random.default_rng(seed + 10000 + i)
@@ -4523,12 +4807,17 @@ def build_envs_amazon_sentiment_selection(
 
     # ─── Test OOD ───
     print(f"\n=== Test OOD (cross sentiment) — {len(ood_texts)} reviews ===")
-    ood_labels_arr = np.array(ood_labels)
+    ood_texts_final  = ood_texts
+    ood_labels_arr   = np.array(ood_labels)
+    if class_ratio_test is not None:
+        rng_sub_t = np.random.default_rng(seed + 22000)
+        ood_texts_final, ood_labels_arr = _subsample_to_ratio(
+            ood_texts_final, ood_labels_arr, class_ratio_test, rng_sub_t)
     n0_ood = int((ood_labels_arr == 0).sum())
     n1_ood = int((ood_labels_arr == 1).sum())
     print(f"  Inutiles+positif : {n0_ood}, Utiles+négatif : {n1_ood}")
     X_test = tokenize_and_embed_with_bert(
-        ood_texts, bert_model, max_length, device, pooling)
+        ood_texts_final, bert_model, max_length, device, pooling)
     test_env = Env(
         torch.from_numpy(X_test),
         torch.from_numpy(ood_labels_arr.reshape(-1, 1).astype(np.float32)),

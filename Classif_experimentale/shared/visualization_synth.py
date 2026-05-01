@@ -132,44 +132,23 @@ def plot_accuracy_curves(erm_hist, irm_hist, filename, dataset_name=''):
 
 
 def plot_loss_curves(erm_hist, irm_hist, filename, dataset_name=''):
-    """BCE loss (ERM vs IRM) on left axis + IRM invariance penalty bars on right axis."""
+    """Cross-entropy (ERM vs IRM) — seule quantité comparable entre les deux."""
     label = DATASET_LABEL.get(dataset_name, dataset_name)
     fig, ax = plt.subplots(figsize=(9, 5))
-    fig.suptitle(f'{label}  —  Training Loss & Invariance Penalty', fontweight='bold')
+    fig.suptitle(f'{label}  —  Cross-entropy (ERM vs IRM)', fontweight='bold')
 
-    # ---- Left axis: BCE loss curves ----
-    es,  e_loss = _subsample(erm_hist['loss'], erm_hist['step'], interval=50)
+    # Les deux modèles : on trace la cross-entropy pure (history['loss'])
+    # ERM minimise directement CE ; IRM la sacrifie partiellement pour l'invariance.
+    # => IRM aura une CE plus haute à convergence (fit sacrifié pour l'invariance).
+    es, e_loss = _subsample(erm_hist['loss'], erm_hist['step'], interval=50)
     is_, i_loss = _subsample(irm_hist['loss'], irm_hist['step'], interval=50)
     ax.plot(es,  e_loss, '-', color=ERM_C, lw=0.8, alpha=0.2)
     ax.plot(is_, i_loss, '-', color=IRM_C, lw=0.8, alpha=0.2)
-    l1, = ax.plot(es,  _ema(e_loss), '-', color=ERM_C, lw=2.0, label='ERM  (cross-entropy)')
-    l2, = ax.plot(is_, _ema(i_loss), '-', color=IRM_C, lw=2.0, label='IRM  (cross-entropy)')
+    ax.plot(es,  _ema(e_loss), '-', color=ERM_C, lw=2.0, label='ERM')
+    ax.plot(is_, _ema(i_loss), '-', color=IRM_C, lw=2.0, label='IRM')
     ax.set_xlabel('Training step')
     ax.set_ylabel('Cross-entropy loss')
-
-    # ---- Right axis: IRM invariance penalty bars ----
-    pen = irm_hist.get('penalty', [])
-    lines_penalty = []
-    if pen:
-        ax2 = ax.twinx()
-        ax2.spines['right'].set_visible(True)
-        ps, p_vals = _subsample(pen, irm_hist['step'], interval=200)
-        bar_width = ps[1] - ps[0] if len(ps) > 1 else 200
-        PEN_C = '#999999'
-        bars = ax2.bar(ps, p_vals, width=bar_width * 0.7, color=PEN_C, alpha=0.45,
-                       align='center', zorder=0,
-                       label=f'IRM penalty  (final: {p_vals[-1]:.2e})')
-        ax2.set_ylabel('Invariance penalty  '
-                       r'$\|\nabla_{\bar{w}}\mathcal{L}_e\|^2$',
-                       color=PEN_C)
-        ax2.tick_params(axis='y', colors=PEN_C)
-        ax2.spines['right'].set_edgecolor(PEN_C)
-        ax2.yaxis.get_offset_text().set_color(PEN_C)
-        lines_penalty = [bars]
-
-    # ---- Combined legend ----
-    handles = [l1, l2] + (lines_penalty if lines_penalty else [])
-    ax.legend(handles=handles, loc='upper right')
+    ax.legend(loc='upper right')
 
     plt.tight_layout()
     _save_fig(filename)
