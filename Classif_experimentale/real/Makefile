@@ -1,5 +1,6 @@
 .PHONY: help moji civilcomments civilcomments_bias civilcomments_identity \
-        amazon coref multinli multinli_ft multinli_irm_ft multinli_hans all
+        amazon coref multinli multinli_ft multinli_irm_ft multinli_hans \
+        multinli_snli_injection all
 
 THIS_DIR = $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 ROOT     = $(abspath $(THIS_DIR)/..)
@@ -19,6 +20,7 @@ SCRIPT_COREF       = real/coref/coref_irm_debiasing.py
 SCRIPT_MULTINLI    = real/multinli/run_multinli_erm_vs_irm.py
 SCRIPT_MULTINLI_FT_IRM = real/multinli/run_multinli_finetune_irm.py
 SCRIPT_MULTINLI_HANS   = real/multinli/run_multinli_hans.py
+SCRIPT_MULTINLI_SNLI_INJ = real/multinli/run_nli_snli_injection.py
 
 help:
 	@echo "Expériences NLP réelles disponibles :"
@@ -30,6 +32,7 @@ help:
 	@echo "  make coref               - Débiaisage gender sur coref (IRM)"
 	@echo "  make multinli            - ERM vs IRM sur MultiNLI → ANLI OOD"
 	@echo "  make multinli_ft         - idem avec DistilBERT fine-tuné"
+	@echo "  make multinli_snli_injection - ERM vs IRM MNLI+SNLI injecté → HANS/ANLI/SNLI-Hard"
 	@echo "  make all                 - Lance moji + civilcomments + amazon + multinli"
 	@echo ""
 	@echo "Variables overridables :"
@@ -100,6 +103,7 @@ MNLI_EVAL_EVERY ?= 100
 MNLI_MAX_LENGTH ?= 256
 MNLI_EMBED_BATCH ?= 256
 MNLI_CACHE_DIR  ?= real/multinli/.embed_cache
+MNLI_BERT_MODEL ?= bert-base-uncased
 
 multinli:
 	cd $(ROOT) && $(PYTHON) $(SCRIPT_MULTINLI) \
@@ -198,3 +202,33 @@ multinli_hans:
 		--eval_every $(MNLI_HANS_EVAL) \
 		--max_length $(MNLI_MAX_LENGTH) \
 		--bert_model $(MNLI_HANS_MODEL)
+
+# ---- MultiNLI + injection SNLI (exp. j) ----
+# ERM vs IRM sur 5 envs = MNLI genres + fraction croissante de SNLI.
+# Évaluation : Val Matched/Mismatched · ANLI R1-R3 · HANS · SNLI-Hard.
+# Les embeddings MNLI/SNLI sont réutilisés depuis le cache de multinli.
+MNLI_INJ_ERM_STEPS  ?= 25000
+MNLI_INJ_IRM_STEPS  ?= 25000
+MNLI_INJ_ERM_LR     ?= 1e-3
+MNLI_INJ_IRM_LR     ?= 1e-3
+MNLI_INJ_IRM_LAMBDA ?= 500.0
+MNLI_INJ_BATCH      ?= 512
+MNLI_INJ_EVAL_EVERY ?= 100
+MNLI_INJ_SNLI_RATIOS ?= 0.05 0.10 0.15 0.20 0.25
+
+multinli_snli_injection:
+	cd $(ROOT) && $(PYTHON) $(SCRIPT_MULTINLI_SNLI_INJ) \
+		--seed $(SEED) \
+		--device $(DEVICE) \
+		--bert_model $(MNLI_BERT_MODEL) \
+		--max_length $(MNLI_MAX_LENGTH) \
+		--embed_batch $(MNLI_EMBED_BATCH) \
+		--snli_ratios $(MNLI_INJ_SNLI_RATIOS) \
+		--erm_steps $(MNLI_INJ_ERM_STEPS) \
+		--erm_lr $(MNLI_INJ_ERM_LR) \
+		--irm_steps $(MNLI_INJ_IRM_STEPS) \
+		--irm_lr $(MNLI_INJ_IRM_LR) \
+		--irm_lambda $(MNLI_INJ_IRM_LAMBDA) \
+		--batch $(MNLI_INJ_BATCH) \
+		--eval_every $(MNLI_INJ_EVAL_EVERY) \
+		--cache_dir $(MNLI_CACHE_DIR)

@@ -23,7 +23,7 @@ from data_synth import (
     build_envs_anti_causal_confounding_varying_gamma,
     build_envs_anti_causal_confounding_varying_pc,
 )
-from models_training import train_erm, train_irm
+from models_training import train_erm, train_irm, train_ibirm
 from utils_irm import resolve_device
 from visualization_synth import generate_all_plots
 import warnings
@@ -51,6 +51,12 @@ if __name__ == "__main__":
     plot_dir = args.plot_dir if args.plot_dir else str(_Path(__file__).parent / 'plots' / _dataset_slug)
     os.makedirs(plot_dir, exist_ok=True)
 
+    _model_kw = dict(
+        use_mlp=args.use_mlp,
+        mlp_hidden=args.mlp_hidden,
+        mlp_dropout=args.mlp_dropout,
+    )
+
     if args.dataset == 'synthetic_semi_anti_causal':
         train_envs, val_envs, test_env = build_envs_semi_anti_causal(
             n=args.n,
@@ -69,7 +75,7 @@ if __name__ == "__main__":
             envs=train_envs, val_envs=val_envs, test_env=test_env,
             steps=args.erm_steps, lr=args.erm_lr, batch=args.erm_batch,
             seed=args.seed, device=device, eval_every=args.eval_every,  
-            dataset_name=args.dataset
+            dataset_name=args.dataset, **_model_kw
         )
         
         # ===== IRM =====
@@ -78,11 +84,21 @@ if __name__ == "__main__":
             steps=args.irm_steps, lr=args.irm_lr, batch=args.irm_batch,
             seed=args.seed, device=device, eval_every=args.eval_every,
             irm_lambda=args.irm_lambda,
-            dataset_name=args.dataset
+            dataset_name=args.dataset, **_model_kw
         )
 
+        ibirm, ibirm_hist = None, None
+        if args.run_ibirm:
+            ibirm, ibirm_hist = train_ibirm(
+                envs=train_envs, val_envs=val_envs, test_env=test_env,
+                steps=args.ibirm_steps, lr=args.ibirm_lr, batch=args.ibirm_batch,
+                irm_lambda=args.ibirm_lambda, ib_lambda=args.ib_lambda,
+                seed=args.seed, device=device, eval_every=args.eval_every,
+                dataset_name=args.dataset, **_model_kw
+            )
         # ===== PLOTS =====
-        generate_all_plots(erm_hist, irm_hist, erm, irm, train_envs, test_env, plot_dir, args.dataset)
+        generate_all_plots(erm_hist, irm_hist, erm, irm, train_envs, test_env, plot_dir, args.dataset,
+                           ibirm_hist=ibirm_hist, ibirm_model=ibirm)
     
     elif args.dataset == 'synthetic_selection':
         
@@ -106,7 +122,7 @@ if __name__ == "__main__":
             steps=args.erm_steps, lr=args.erm_lr, batch=args.erm_batch,
             seed=args.seed, device=device,
             eval_every=args.eval_every, val_envs=val_envs, test_env=test_env,
-            dataset_name=args.dataset
+            dataset_name=args.dataset, **_model_kw
         )
 
         irm, irm_hist = train_irm(
@@ -115,11 +131,22 @@ if __name__ == "__main__":
             irm_lambda=args.irm_lambda,
             seed=args.seed, device=device,
             eval_every=args.eval_every, val_envs=val_envs, test_env=test_env,
-            dataset_name=args.dataset
+            dataset_name=args.dataset, **_model_kw
         )
 
+        ibirm, ibirm_hist = None, None
+        if args.run_ibirm:
+            ibirm, ibirm_hist = train_ibirm(
+                envs=train_envs,
+                steps=args.ibirm_steps, lr=args.ibirm_lr, batch=args.ibirm_batch,
+                irm_lambda=args.ibirm_lambda, ib_lambda=args.ib_lambda,
+                seed=args.seed, device=device,
+                eval_every=args.eval_every, val_envs=val_envs, test_env=test_env,
+                dataset_name=args.dataset, **_model_kw
+            )
         # ===== PLOTS =====
-        generate_all_plots(erm_hist, irm_hist, erm, irm, train_envs, test_env, plot_dir, args.dataset)
+        generate_all_plots(erm_hist, irm_hist, erm, irm, train_envs, test_env, plot_dir, args.dataset,
+                           ibirm_hist=ibirm_hist, ibirm_model=ibirm)
 
     elif args.dataset == 'synthetic_confounding_varying_proxy':
         train_envs, val_envs, test_env = build_envs_confounding_varying_proxy(
@@ -137,7 +164,7 @@ if __name__ == "__main__":
             envs=train_envs, val_envs=val_envs, test_env=test_env,
             steps=args.erm_steps, lr=args.erm_lr, batch=args.erm_batch,
             seed=args.seed, device=device, eval_every=args.eval_every,
-            dataset_name=args.dataset
+            dataset_name=args.dataset, **_model_kw
         )
 
         irm, irm_hist = train_irm(
@@ -146,11 +173,22 @@ if __name__ == "__main__":
             irm_lambda=args.irm_lambda,
             seed=args.seed, device=device,
             eval_every=args.eval_every,
-            dataset_name=args.dataset
+            dataset_name=args.dataset, **_model_kw
         )
 
+        ibirm, ibirm_hist = None, None
+        if args.run_ibirm:
+            ibirm, ibirm_hist = train_ibirm(
+                envs=train_envs, val_envs=val_envs, test_env=test_env,
+                steps=args.ibirm_steps, lr=args.ibirm_lr, batch=args.ibirm_batch,
+                irm_lambda=args.ibirm_lambda, ib_lambda=args.ib_lambda,
+                seed=args.seed, device=device,
+                eval_every=args.eval_every,
+                dataset_name=args.dataset, **_model_kw
+            )
         # ===== PLOTS =====
-        generate_all_plots(erm_hist, irm_hist, erm, irm, train_envs, test_env, plot_dir, args.dataset)
+        generate_all_plots(erm_hist, irm_hist, erm, irm, train_envs, test_env, plot_dir, args.dataset,
+                           ibirm_hist=ibirm_hist, ibirm_model=ibirm)
              
     elif args.dataset == 'synthetic_confounding_varying_gamma':
         train_envs, val_envs, test_env = build_envs_confounding_varying_gamma(
@@ -168,7 +206,7 @@ if __name__ == "__main__":
             envs=train_envs, val_envs=val_envs, test_env=test_env,
             steps=args.erm_steps, lr=args.erm_lr, batch=args.erm_batch,
             seed=args.seed, device=device, eval_every=args.eval_every,
-            dataset_name=args.dataset
+            dataset_name=args.dataset, **_model_kw
         )
 
         irm, irm_hist = train_irm(
@@ -177,11 +215,22 @@ if __name__ == "__main__":
             irm_lambda=args.irm_lambda,
             seed=args.seed, device=device,
             eval_every=args.eval_every,
-            dataset_name=args.dataset
+            dataset_name=args.dataset, **_model_kw
         )
 
+        ibirm, ibirm_hist = None, None
+        if args.run_ibirm:
+            ibirm, ibirm_hist = train_ibirm(
+                envs=train_envs, val_envs=val_envs, test_env=test_env,
+                steps=args.ibirm_steps, lr=args.ibirm_lr, batch=args.ibirm_batch,
+                irm_lambda=args.ibirm_lambda, ib_lambda=args.ib_lambda,
+                seed=args.seed, device=device,
+                eval_every=args.eval_every,
+                dataset_name=args.dataset, **_model_kw
+            )
         # ===== PLOTS =====
-        generate_all_plots(erm_hist, irm_hist, erm, irm, train_envs, test_env, plot_dir, args.dataset)
+        generate_all_plots(erm_hist, irm_hist, erm, irm, train_envs, test_env, plot_dir, args.dataset,
+                           ibirm_hist=ibirm_hist, ibirm_model=ibirm)
 
     elif args.dataset == 'synthetic_confounding_varying_pc':
         train_envs, val_envs, test_env = build_envs_confounding_varying_pc(
@@ -201,7 +250,7 @@ if __name__ == "__main__":
             envs=train_envs, val_envs=val_envs, test_env=test_env,
             steps=args.erm_steps, lr=args.erm_lr, batch=args.erm_batch,
             seed=args.seed, device=device, eval_every=args.eval_every,
-            dataset_name=args.dataset
+            dataset_name=args.dataset, **_model_kw
         )
 
         irm, irm_hist = train_irm(
@@ -209,11 +258,21 @@ if __name__ == "__main__":
             steps=args.irm_steps, lr=args.irm_lr, batch=args.irm_batch,
             irm_lambda=args.irm_lambda,
             seed=args.seed, device=device, eval_every=args.eval_every,
-            dataset_name=args.dataset
+            dataset_name=args.dataset, **_model_kw
         )
 
+        ibirm, ibirm_hist = None, None
+        if args.run_ibirm:
+            ibirm, ibirm_hist = train_ibirm(
+                envs=train_envs, val_envs=val_envs, test_env=test_env,
+                steps=args.ibirm_steps, lr=args.ibirm_lr, batch=args.ibirm_batch,
+                irm_lambda=args.ibirm_lambda, ib_lambda=args.ib_lambda,
+                seed=args.seed, device=device, eval_every=args.eval_every,
+                dataset_name=args.dataset, **_model_kw
+            )
         # ===== PLOTS =====
-        generate_all_plots(erm_hist, irm_hist, erm, irm, train_envs, test_env, plot_dir, args.dataset)
+        generate_all_plots(erm_hist, irm_hist, erm, irm, train_envs, test_env, plot_dir, args.dataset,
+                           ibirm_hist=ibirm_hist, ibirm_model=ibirm)
 
     # =========================================================================
     # ===== CAS ANTI-CAUSAL (Y → X_z) — mêmes 5 perturbations trompeuses =====
@@ -236,16 +295,26 @@ if __name__ == "__main__":
             envs=train_envs, val_envs=val_envs, test_env=test_env,
             steps=args.erm_steps, lr=args.erm_lr, batch=args.erm_batch,
             seed=args.seed, device=device, eval_every=args.eval_every,
-            dataset_name=args.dataset
+            dataset_name=args.dataset, **_model_kw
         )
         irm, irm_hist = train_irm(
             envs=train_envs, val_envs=val_envs, test_env=test_env,
             steps=args.irm_steps, lr=args.irm_lr, batch=args.irm_batch,
             irm_lambda=args.irm_lambda,
             seed=args.seed, device=device, eval_every=args.eval_every,
-            dataset_name=args.dataset
+            dataset_name=args.dataset, **_model_kw
         )
-        generate_all_plots(erm_hist, irm_hist, erm, irm, train_envs, test_env, plot_dir, args.dataset)
+        ibirm, ibirm_hist = None, None
+        if args.run_ibirm:
+            ibirm, ibirm_hist = train_ibirm(
+                envs=train_envs, val_envs=val_envs, test_env=test_env,
+                steps=args.ibirm_steps, lr=args.ibirm_lr, batch=args.ibirm_batch,
+                irm_lambda=args.ibirm_lambda, ib_lambda=args.ib_lambda,
+                seed=args.seed, device=device, eval_every=args.eval_every,
+                dataset_name=args.dataset, **_model_kw
+            )
+        generate_all_plots(erm_hist, irm_hist, erm, irm, train_envs, test_env, plot_dir, args.dataset,
+                           ibirm_hist=ibirm_hist, ibirm_model=ibirm)
 
     elif args.dataset == 'synthetic_ac_selection':
         train_alphas = list(map(float, args.sel_alpha_train))
@@ -266,16 +335,26 @@ if __name__ == "__main__":
             envs=train_envs, val_envs=val_envs, test_env=test_env,
             steps=args.erm_steps, lr=args.erm_lr, batch=args.erm_batch,
             seed=args.seed, device=device, eval_every=args.eval_every,
-            dataset_name=args.dataset
+            dataset_name=args.dataset, **_model_kw
         )
         irm, irm_hist = train_irm(
             envs=train_envs, val_envs=val_envs, test_env=test_env,
             steps=args.irm_steps, lr=args.irm_lr, batch=args.irm_batch,
             irm_lambda=args.irm_lambda,
             seed=args.seed, device=device, eval_every=args.eval_every,
-            dataset_name=args.dataset
+            dataset_name=args.dataset, **_model_kw
         )
-        generate_all_plots(erm_hist, irm_hist, erm, irm, train_envs, test_env, plot_dir, args.dataset)
+        ibirm, ibirm_hist = None, None
+        if args.run_ibirm:
+            ibirm, ibirm_hist = train_ibirm(
+                envs=train_envs, val_envs=val_envs, test_env=test_env,
+                steps=args.ibirm_steps, lr=args.ibirm_lr, batch=args.ibirm_batch,
+                irm_lambda=args.ibirm_lambda, ib_lambda=args.ib_lambda,
+                seed=args.seed, device=device, eval_every=args.eval_every,
+                dataset_name=args.dataset, **_model_kw
+            )
+        generate_all_plots(erm_hist, irm_hist, erm, irm, train_envs, test_env, plot_dir, args.dataset,
+                           ibirm_hist=ibirm_hist, ibirm_model=ibirm)
 
     elif args.dataset == 'synthetic_ac_confounding_varying_proxy':
         train_envs, val_envs, test_env = build_envs_anti_causal_confounding_varying_proxy(
@@ -290,21 +369,32 @@ if __name__ == "__main__":
             dim_y=args.dim_y,
             p_c_train=list(args.ac_proxy_pc_train) if args.ac_proxy_pc_train else None,
             p_c_test=args.ac_proxy_pc_test,
+            label_flip=args.conf_label_flip,
         )
         erm, erm_hist = train_erm(
             envs=train_envs, val_envs=val_envs, test_env=test_env,
             steps=args.erm_steps, lr=args.erm_lr, batch=args.erm_batch,
             seed=args.seed, device=device, eval_every=args.eval_every,
-            dataset_name=args.dataset
+            dataset_name=args.dataset, **_model_kw
         )
         irm, irm_hist = train_irm(
             envs=train_envs, val_envs=val_envs, test_env=test_env,
             steps=args.irm_steps, lr=args.irm_lr, batch=args.irm_batch,
             irm_lambda=args.irm_lambda,
             seed=args.seed, device=device, eval_every=args.eval_every,
-            dataset_name=args.dataset
+            dataset_name=args.dataset, **_model_kw
         )
-        generate_all_plots(erm_hist, irm_hist, erm, irm, train_envs, test_env, plot_dir, args.dataset)
+        ibirm, ibirm_hist = None, None
+        if args.run_ibirm:
+            ibirm, ibirm_hist = train_ibirm(
+                envs=train_envs, val_envs=val_envs, test_env=test_env,
+                steps=args.ibirm_steps, lr=args.ibirm_lr, batch=args.ibirm_batch,
+                irm_lambda=args.ibirm_lambda, ib_lambda=args.ib_lambda,
+                seed=args.seed, device=device, eval_every=args.eval_every,
+                dataset_name=args.dataset, **_model_kw
+            )
+        generate_all_plots(erm_hist, irm_hist, erm, irm, train_envs, test_env, plot_dir, args.dataset,
+                           ibirm_hist=ibirm_hist, ibirm_model=ibirm)
 
     elif args.dataset == 'synthetic_ac_confounding_varying_gamma':
         train_envs, val_envs, test_env = build_envs_anti_causal_confounding_varying_gamma(
@@ -323,16 +413,26 @@ if __name__ == "__main__":
             envs=train_envs, val_envs=val_envs, test_env=test_env,
             steps=args.erm_steps, lr=args.erm_lr, batch=args.erm_batch,
             seed=args.seed, device=device, eval_every=args.eval_every,
-            dataset_name=args.dataset
+            dataset_name=args.dataset, **_model_kw
         )
         irm, irm_hist = train_irm(
             envs=train_envs, val_envs=val_envs, test_env=test_env,
             steps=args.irm_steps, lr=args.irm_lr, batch=args.irm_batch,
             irm_lambda=args.irm_lambda,
             seed=args.seed, device=device, eval_every=args.eval_every,
-            dataset_name=args.dataset
+            dataset_name=args.dataset, **_model_kw
         )
-        generate_all_plots(erm_hist, irm_hist, erm, irm, train_envs, test_env, plot_dir, args.dataset)
+        ibirm, ibirm_hist = None, None
+        if args.run_ibirm:
+            ibirm, ibirm_hist = train_ibirm(
+                envs=train_envs, val_envs=val_envs, test_env=test_env,
+                steps=args.ibirm_steps, lr=args.ibirm_lr, batch=args.ibirm_batch,
+                irm_lambda=args.ibirm_lambda, ib_lambda=args.ib_lambda,
+                seed=args.seed, device=device, eval_every=args.eval_every,
+                dataset_name=args.dataset, **_model_kw
+            )
+        generate_all_plots(erm_hist, irm_hist, erm, irm, train_envs, test_env, plot_dir, args.dataset,
+                           ibirm_hist=ibirm_hist, ibirm_model=ibirm)
 
     elif args.dataset == 'synthetic_ac_confounding_varying_pc':
         train_envs, val_envs, test_env = build_envs_anti_causal_confounding_varying_pc(
@@ -351,13 +451,24 @@ if __name__ == "__main__":
             envs=train_envs, val_envs=val_envs, test_env=test_env,
             steps=args.erm_steps, lr=args.erm_lr, batch=args.erm_batch,
             seed=args.seed, device=device, eval_every=args.eval_every,
-            dataset_name=args.dataset
+            dataset_name=args.dataset, **_model_kw
         )
         irm, irm_hist = train_irm(
             envs=train_envs, val_envs=val_envs, test_env=test_env,
             steps=args.irm_steps, lr=args.irm_lr, batch=args.irm_batch,
             irm_lambda=args.irm_lambda,
             seed=args.seed, device=device, eval_every=args.eval_every,
-            dataset_name=args.dataset
+            dataset_name=args.dataset, **_model_kw
         )
-        generate_all_plots(erm_hist, irm_hist, erm, irm, train_envs, test_env, plot_dir, args.dataset)
+        # ===== IB-IRM =====
+        ibirm, ibirm_hist = None, None
+        if args.run_ibirm:
+            ibirm, ibirm_hist = train_ibirm(
+                envs=train_envs, val_envs=val_envs, test_env=test_env,
+                steps=args.ibirm_steps, lr=args.ibirm_lr, batch=args.ibirm_batch,
+                irm_lambda=args.ibirm_lambda, ib_lambda=args.ib_lambda,
+                seed=args.seed, device=device, eval_every=args.eval_every,
+                dataset_name=args.dataset, **_model_kw
+            )
+        generate_all_plots(erm_hist, irm_hist, erm, irm, train_envs, test_env, plot_dir, args.dataset,
+                           ibirm_hist=ibirm_hist, ibirm_model=ibirm)

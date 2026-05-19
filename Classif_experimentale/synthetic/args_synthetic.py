@@ -17,15 +17,15 @@ DATASET_DEFAULTS = {
         'gap_center':  0.2,
         'gap_max':     0.20,
         'gap_test':    1.0,
-        'param_label': 'p_spur',
-        'x_label':     'Gap Δp_spur = p₂ − p₁',
+        'param_label': 'p_correct',
+        'x_label':     'Gap Δp_correct = p₂ − p₁',
     },
     'synthetic_selection': {
         'gap_center':  0.85,
         'gap_max':     0.20,
         'gap_test':    0.0,
-        'param_label': 'alpha',
-        'x_label':     'Gap Δα = α₂ − α₁',
+        'param_label': 'p_select',
+        'x_label':     'Gap Δp_select = p_select₂ − p_select₁',
     },
     'synthetic_confounding_varying_proxy': {
         'gap_center':  0.06,
@@ -46,36 +46,36 @@ DATASET_DEFAULTS = {
         'gap_center':  0.2,
         'gap_max':     0.20,
         'gap_test':    1.0,
-        'param_label': 'p_spur',
-        'x_label':     'Gap Δp_spur = p₂ − p₁  (anti-causal)',
+        'param_label': 'p_correct',
+        'x_label':     'Gap Δp_correct = p₂ − p₁',
     },
     'synthetic_ac_selection': {
         'gap_center':  0.85,
         'gap_max':     0.20,
         'gap_test':    0.0,
-        'param_label': 'alpha',
-        'x_label':     'Gap Δα = α₂ − α₁  (anti-causal)',
+        'param_label': 'p_select',
+        'x_label':     'Gap Δp_select = p_select₂ − p_select₁',
     },
     'synthetic_ac_confounding_varying_proxy': {
         'gap_center':  0.06,
         'gap_max':     0.20,
         'gap_test':    0.99,
         'param_label': 'a (flip rate)',
-        'x_label':     'Gap Δa = a₂ − a₁  (anti-causal)',
+        'x_label':     'Gap Δa = a₂ − a₁',
     },
     'synthetic_ac_confounding_varying_gamma': {
         'gap_center':  2.0,
         'gap_max':     3.0,
         'gap_test':    0.0,
         'param_label': 'gamma',
-        'x_label':     'Gap Δγ = γ₂ − γ₁  (anti-causal)',
+        'x_label':     'Gap Δγ = γ₂ − γ₁',
     },
     'synthetic_ac_confounding_varying_pc': {
         'gap_center':  0.9,
         'gap_max':     0.20,
         'gap_test':    0.1,
         'param_label': 'p_c',
-        'x_label':     'Gap Δp_c = p_c₂ − p_c₁  (anti-causal)',
+        'x_label':     'Gap Δp_c = p_c₂ − p_c₁',
     },
 }
 
@@ -131,7 +131,25 @@ def base_parser() -> argparse.ArgumentParser:
     p.add_argument('--irm_lr',     type=float, default=5e-3)
     p.add_argument('--irm_lambda', type=float, default=200.0)
     p.add_argument('--irm_batch',  type=int,   default=512)
-    # ---- Infrastructure ----
+    # ---- IB-IRM ----
+    p.add_argument('--ibirm_steps',  type=int,   default=25_000)
+    p.add_argument('--ibirm_lr',     type=float, default=5e-3)
+    p.add_argument('--ibirm_lambda', type=float, default=200.0,
+                   help='IRM penalty coefficient for IB-IRM')
+    p.add_argument('--ibirm_batch',  type=int,   default=512)
+    p.add_argument('--ib_lambda',    type=float, default=0.01,
+                   help='Information bottleneck coefficient for IB-IRM (logit variance penalty). '
+                        'Typical range : 0.001 – 0.1. Independant of ibirm_lambda.')
+    p.add_argument('--run_ibirm', action='store_true', default=False,
+                   help='Run IB-IRM training in addition to ERM and IRM (disabled by default).')
+    # ---- Model architecture ----
+    p.add_argument('--use_mlp', action='store_true', default=False,
+                   help='Use a small MLP head instead of logistic regression '
+                        '(ignored when finetune_bert_layers > 0).')
+    p.add_argument('--mlp_hidden',  type=int,   default=256,
+                   help='Hidden size of the MLP (only used when --use_mlp).')
+    p.add_argument('--mlp_dropout', type=float, default=0.1,
+                   help='Dropout rate of the MLP (only used when --use_mlp).')
     p.add_argument('--seed',       type=int,  default=1)
     p.add_argument('--device',     type=str,  default='auto')
     p.add_argument('--eval_every', type=int,  default=100)
@@ -221,6 +239,95 @@ def make_gap_sweep_parser() -> argparse.ArgumentParser:
     p.add_argument('--gap_max',    type=float, default=None,
                    help='Maximum gap (dataset default if omitted)')
     p.add_argument('--out_dir',    type=str,   default=None)
+
+    return p
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Noise sweep defaults (label_flip sweep, fixed env gap)
+# ─────────────────────────────────────────────────────────────────────────────
+NOISE_SWEEP_DEFAULTS = {
+    'synthetic_semi_anti_causal': {
+        'p1':          0.1,
+        'p2':          0.2,
+        'p_test':      1.0,
+        'noise_max':   0.25,
+        'noise_step':  0.025,
+        'param_label': 'p_correct',
+    },
+    'synthetic_selection': {
+        'p1':          0.9,
+        'p2':          0.8,
+        'p_test':      0.0,
+        'noise_max':   0.25,
+        'noise_step':  0.025,
+        'param_label': 'p_select',
+    },
+    'synthetic_ac_semi_anti_causal': {
+        'p1':          0.1,
+        'p2':          0.2,
+        'p_test':      1.0,
+        'noise_max':   0.25,
+        'noise_step':  0.025,
+        'param_label': 'p_correct',
+    },
+    'synthetic_ac_selection': {
+        'p1':          0.9,
+        'p2':          0.8,
+        'p_test':      0.0,
+        'noise_max':   0.25,
+        'noise_step':  0.025,
+        'param_label': 'p_select',
+    },
+    'synthetic_confounding_varying_proxy': {
+        'p1':          0.06,
+        'p2':          0.20,
+        'p_test':      0.99,
+        'noise_max':   5.0,
+        'noise_step':  0.5,
+        'param_label': 'a (flip rate)',
+    },
+    'synthetic_ac_confounding_varying_proxy': {
+        'p1':          0.06,
+        'p2':          0.20,
+        'p_test':      0.99,
+        'noise_max':   0.25,
+        'noise_step':  0.025,
+        'param_label': 'a (flip rate)',
+    },
+}
+
+
+def make_noise_sweep_parser() -> argparse.ArgumentParser:
+    """Full parser for run_noise_sweep.py.
+
+    Sweeps the label_flip (noise) level from 0 to noise_max while keeping
+    the environment gap fixed (at the values used in the main experiments).
+    Supported datasets: semi_anti_causal and selection (causal + anti-causal).
+    """
+    p = argparse.ArgumentParser(
+        description="Noise sweep – synthetic datasets (semi_anti_causal and selection)",
+        parents=[base_parser()],
+    )
+
+    p.add_argument('--dataset', required=True,
+                   choices=list(NOISE_SWEEP_DEFAULTS.keys()))
+
+    # Fixed env parameters (dataset defaults applied in the script)
+    p.add_argument('--p1',        type=float, default=None,
+                   help='Env-1 spurious parameter (dataset default if omitted)')
+    p.add_argument('--p2',        type=float, default=None,
+                   help='Env-2 spurious parameter (dataset default if omitted)')
+    p.add_argument('--p_test',    type=float, default=None,
+                   help='OOD test spurious parameter (dataset default if omitted)')
+
+    # Noise sweep range
+    p.add_argument('--noise_max',  type=float, default=None,
+                   help='Maximum label_flip value to sweep up to (dataset default if omitted)')
+    p.add_argument('--noise_step', type=float, default=None,
+                   help='Step size for the noise sweep')
+
+    p.add_argument('--out_dir',   type=str,   default=None)
 
     return p
 

@@ -155,6 +155,7 @@ def _build(gap):
             gamma=args.conf_gamma,
             seed=args.seed, val_frac=args.val_frac, n_test=args.n_test,
             dim_z=args.dim_z, dim_y=args.dim_y,
+            label_flip=args.label_flip,
         )
     elif args.dataset == 'synthetic_ac_confounding_varying_gamma':
         envs = build_envs_anti_causal_confounding_varying_gamma(
@@ -219,7 +220,7 @@ for gap in gaps:
 
     # Free GPU memory between gap iterations
     del _
-    if device.type == 'cuda':
+    if device == 'cuda':
         torch.cuda.empty_cache()
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -251,21 +252,16 @@ erm_acc  = [r['erm_test_final'] for r in results]
 irm_acc  = [r['irm_test_final'] for r in results]
 
 fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-fig.suptitle(
-    f"{args.dataset} – Impact du gap entre environnements\n"
-    f"(centre={args.gap_center}, test_OOD={args.gap_test}, "
-    f"N={args.n:,}, λ_IRM={args.irm_lambda})",
-    fontsize=12, fontweight='bold'
-)
+
 
 # ── Axe gauche : précision OOD finale ──
 ax = axes[0]
-ax.plot(g, erm_acc, 'o-', color='orange',    linewidth=2.5, markersize=7, label='ERM (OOD final)')
-ax.plot(g, irm_acc, 's-', color='steelblue', linewidth=2.5, markersize=7, label='IRM (OOD final)')
-ax.fill_between(g, erm_acc, irm_acc, alpha=0.12, color='steelblue', label='Avantage IRM')
+ax.plot(g, erm_acc, 'o-', color='orange',    linewidth=2.5, markersize=7, label='ERM (Final OOD)')
+ax.plot(g, irm_acc, 's-', color='steelblue', linewidth=2.5, markersize=7, label='IRM (Final OOD)')
+ax.fill_between(g, erm_acc, irm_acc, alpha=0.12, color='steelblue', label='IRM Advantage')
 ax.set_xlabel(defs['x_label'], fontsize=11)
-ax.set_ylabel('Précision test OOD', fontsize=11)
-ax.set_title('Précision finale', fontsize=11)
+ax.set_ylabel('OOD Test Accuracy', fontsize=11)
+ax.set_title('Final Accuracy', fontsize=11)
 ax.set_xlim(-0.005, args.gap_max + 0.005)
 _all_acc = erm_acc + irm_acc
 _margin  = max(0.02, (max(_all_acc) - min(_all_acc)) * 0.15)
@@ -287,8 +283,8 @@ colors = ['steelblue' if d >= 0 else 'tomato' for d in delta]
 bars   = ax2.bar(g, delta, width=args.gap_step * 0.7, color=colors, alpha=0.8, edgecolor='white')
 ax2.axhline(0, color='black', linewidth=1.2)
 ax2.set_xlabel(defs['x_label'], fontsize=11)
-ax2.set_ylabel('Avantage IRM  (IRM − ERM)', fontsize=11)
-ax2.set_title('Gain IRM par rapport à ERM', fontsize=11)
+ax2.set_ylabel('IRM Advantage (IRM − ERM)', fontsize=11)
+ax2.set_title('IRM Gain over ERM', fontsize=11)
 ax2.set_xticks(g)
 ax2.set_xticklabels([f'{x:.3f}' for x in g], rotation=45, ha='right')
 ax2.grid(True, alpha=0.3, axis='y')
@@ -305,6 +301,6 @@ print(f"Graphe sauvegardé : {plot_path}")
 plt.close()
 
 # Ensure full GPU memory release before process exits (so the next sweep can start cleanly)
-if device.type == 'cuda':
+if device == 'cuda':
     torch.cuda.synchronize()
     torch.cuda.empty_cache()

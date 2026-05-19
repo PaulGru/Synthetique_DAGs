@@ -1091,6 +1091,7 @@ def make_env_anti_causal_confounding_varying_proxy(
     dim_y: int = 1,
     causal_strength: float = 1.0,
     p_c: float = 0.35,
+    label_flip: float = 0.0,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Anti-causal + confounding varying proxy.
@@ -1117,7 +1118,12 @@ def make_env_anti_causal_confounding_varying_proxy(
     noise_y = rng.normal(0.0, 1.0, size=(n, 1)).astype(np.float32)
     Y = (gamma_scaled * (2.0 * C - 1.0) + noise_y > 0.0).astype(np.float32)
 
-    shift = causal_strength * (2.0 * Y - 1.0) * w_true.reshape(1, -1)
+    Y_for_Xz = Y.copy()
+    if label_flip > 0.0:
+        mask = rng.uniform(0.0, 1.0, size=(n, 1)) < label_flip
+        Y_for_Xz[mask] = 1.0 - Y_for_Xz[mask]
+
+    shift = causal_strength * (2.0 * Y_for_Xz - 1.0) * w_true.reshape(1, -1)
     X_z   = shift + rng.normal(0.0, 1.0, size=(n, dim_z)).astype(np.float32)
 
     N_e = rng.binomial(1, a, size=(n, 1))
@@ -1144,6 +1150,8 @@ def build_envs_anti_causal_confounding_varying_proxy(
     causal_strength: float = 1.0,
     p_c_train: Optional[List[float]] = None,
     p_c_test: float = 0.35,
+    label_flip: float = 0.0,
+
 ) -> Tuple[List[Env], List[Env], Env]:
     """Version anti-causale de build_envs_confounding_varying_proxy."""
     if n_test is None:
@@ -1156,7 +1164,7 @@ def build_envs_anti_causal_confounding_varying_proxy(
         p_c_e = p_c_train[i]
         Xc, Y, Z, _C, w_true, u = make_env_anti_causal_confounding_varying_proxy(
             n=n, seed=seed + i, a=a_e, gamma=gamma, dim_z=dim_z, dim_y=dim_y,
-            causal_strength=causal_strength, p_c=p_c_e,
+            causal_strength=causal_strength, p_c=p_c_e, label_flip=label_flip,
         )
         (X_tr, y_tr), (_, y_vd) = _split_numpy(Xc, Y, val_frac, seed + 1000 + i)
         (Z_tr, _), _             = _split_numpy(Z,  Y, val_frac, seed + 1000 + i)

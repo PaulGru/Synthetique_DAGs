@@ -46,11 +46,12 @@ mpl.rcParams.update({
 })
 
 # ─── Colour palette (Wong colorblind-safe) ────────────────────────────────────
-ERM_C  = '#E69F00'   # orange
-IRM_C  = '#0072B2'   # blue
-CAU_C  = '#009E73'   # green       – causal features
-SPU_C  = '#D55E00'   # vermillion  – spurious features
-TRUE_C = '#CC79A7'   # reddish purple – ground truth direction
+ERM_C    = '#E69F00'   # orange
+IRM_C    = '#0072B2'   # blue
+IBIRM_C  = '#009E73'   # green       – IB-IRM
+CAU_C    = '#009E73'   # green       – causal features
+SPU_C    = '#D55E00'   # vermillion  – spurious features
+TRUE_C   = '#CC79A7'   # reddish purple – ground truth direction
 
 # ─── Dataset display names ────────────────────────────────────────────────────
 DATASET_LABEL = {
@@ -98,31 +99,36 @@ def _ema(arr, alpha=0.05):
 
 # ─── Individual plot functions ────────────────────────────────────────────────
 
-def plot_accuracy_curves(erm_hist, irm_hist, filename, dataset_name=''):
+def plot_accuracy_curves(erm_hist, irm_hist, filename, dataset_name='', ibirm_hist=None):
     """Val (ID) and Test (OOD) accuracy on a single axes with distinct line styles."""
     label = DATASET_LABEL.get(dataset_name, dataset_name)
     fig, ax = plt.subplots(figsize=(9, 5))
-    fig.suptitle(f'{label}  —  ERM vs IRM Accuracy', fontweight='bold')
+
 
     splits = [
         ('val_acc',  'Validation (ID)', '-',  0.85),
         ('test_acc', 'Test (OOD)',       '--', 0.85),
     ]
+    all_vals = []
     for hist_key, split_label, ls, alpha in splits:
         es,  e_acc = _subsample(erm_hist[hist_key], erm_hist['step'])
         is_, i_acc = _subsample(irm_hist[hist_key], irm_hist['step'])
-        delta = i_acc[-1] - e_acc[-1]
+        delta_irm = i_acc[-1] - e_acc[-1]
         ax.plot(es,  e_acc, ls, color=ERM_C, lw=2.0, alpha=alpha,
                 label=f'ERM  {split_label}  (final: {e_acc[-1]:.3f})')
         ax.plot(is_, i_acc, ls, color=IRM_C, lw=2.0, alpha=alpha,
-                label=f'IRM  {split_label}  (final: {i_acc[-1]:.3f},  Δ={delta:+.3f})')
+                label=f'IRM  {split_label}  (final: {i_acc[-1]:.3f},  Δ={delta_irm:+.3f})')
+        all_vals.extend([e_acc, i_acc])
+        if ibirm_hist:
+            ibs_, ib_acc = _subsample(ibirm_hist[hist_key], ibirm_hist['step'])
+            delta_ib = ib_acc[-1] - e_acc[-1]
+            ax.plot(ibs_, ib_acc, ls, color=IBIRM_C, lw=2.0, alpha=alpha,
+                    label=f'IB-IRM  {split_label}  (final: {ib_acc[-1]:.3f},  Δ={delta_ib:+.3f})')
+            all_vals.append(ib_acc)
 
     ax.set_xlabel('Training step')
     ax.set_ylabel('Accuracy')
-    _all = np.concatenate([
-        np.array(erm_hist['val_acc']), np.array(irm_hist['val_acc']),
-        np.array(erm_hist['test_acc']), np.array(irm_hist['test_acc']),
-    ])
+    _all = np.concatenate([np.array(v) for v in all_vals])
     margin = max(0.02, (_all.max() - _all.min()) * 0.15)
     ax.set_ylim(max(0.0, _all.min() - margin), min(1.05, _all.max() + margin))
     ax.legend(loc='best')
@@ -131,21 +137,22 @@ def plot_accuracy_curves(erm_hist, irm_hist, filename, dataset_name=''):
     plt.close()
 
 
-def plot_loss_curves(erm_hist, irm_hist, filename, dataset_name=''):
-    """Cross-entropy (ERM vs IRM) — seule quantité comparable entre les deux."""
+def plot_loss_curves(erm_hist, irm_hist, filename, dataset_name='', ibirm_hist=None):
+    """Cross-entropy (ERM vs IRM vs IB-IRM) — seule quantité comparable entre les modèles."""
     label = DATASET_LABEL.get(dataset_name, dataset_name)
     fig, ax = plt.subplots(figsize=(9, 5))
-    fig.suptitle(f'{label}  —  Cross-entropy (ERM vs IRM)', fontweight='bold')
 
-    # Les deux modèles : on trace la cross-entropy pure (history['loss'])
-    # ERM minimise directement CE ; IRM la sacrifie partiellement pour l'invariance.
-    # => IRM aura une CE plus haute à convergence (fit sacrifié pour l'invariance).
+
     es, e_loss = _subsample(erm_hist['loss'], erm_hist['step'], interval=50)
     is_, i_loss = _subsample(irm_hist['loss'], irm_hist['step'], interval=50)
     ax.plot(es,  e_loss, '-', color=ERM_C, lw=0.8, alpha=0.2)
     ax.plot(is_, i_loss, '-', color=IRM_C, lw=0.8, alpha=0.2)
     ax.plot(es,  _ema(e_loss), '-', color=ERM_C, lw=2.0, label='ERM')
     ax.plot(is_, _ema(i_loss), '-', color=IRM_C, lw=2.0, label='IRM')
+    if ibirm_hist:
+        ibs_, ib_loss = _subsample(ibirm_hist['loss'], ibirm_hist['step'], interval=50)
+        ax.plot(ibs_, ib_loss, '-', color=IBIRM_C, lw=0.8, alpha=0.2)
+        ax.plot(ibs_, _ema(ib_loss), '-', color=IBIRM_C, lw=2.0, label='IB-IRM')
     ax.set_xlabel('Training step')
     ax.set_ylabel('Cross-entropy loss')
     ax.legend(loc='upper right')
@@ -155,7 +162,7 @@ def plot_loss_curves(erm_hist, irm_hist, filename, dataset_name=''):
     plt.close()
 
 
-def plot_feature_weight_dynamics(erm_hist, irm_hist, filename, dataset_name=''):
+def plot_feature_weight_dynamics(erm_hist, irm_hist, filename, dataset_name='', ibirm_hist=None):
     """Causal vs spurious weight norms and spurious usage ratio over training.
 
     Silently skipped when weight tracking is absent (non-logreg models).
@@ -164,9 +171,11 @@ def plot_feature_weight_dynamics(erm_hist, irm_hist, filename, dataset_name=''):
         return
     label = DATASET_LABEL.get(dataset_name, dataset_name)
     fig, ax = plt.subplots(figsize=(9, 5))
-    fig.suptitle(f'{label}  —  Feature Weight Dynamics', fontweight='bold')
 
-    for hist, color, name in [(erm_hist, ERM_C, 'ERM'), (irm_hist, IRM_C, 'IRM')]:
+    models = [(erm_hist, ERM_C, 'ERM'), (irm_hist, IRM_C, 'IRM')]
+    if ibirm_hist:
+        models.append((ibirm_hist, IBIRM_C, 'IB-IRM'))
+    for hist, color, name in models:
         s,  wz = _subsample(hist['w_z'], hist['step'])
         _,  wy = _subsample(hist['w_y'], hist['step'])
         ax.plot(s, wz, '-',  color=color, lw=2.0, label=f'{name} – Invariant features $\\|w_{{\\mathcal{{Z}}}}\\|$')
@@ -203,8 +212,6 @@ def plot_final_weight_profile(erm_model, irm_model, train_envs, filename, datase
     bar_colors = [CAU_C if i < dim_z else SPU_C for i in range(d_in)]
 
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-    fig.suptitle(f'{label}  —  Final Learned Weights per Feature',
-                 fontsize=13, fontweight='bold')
 
     for ax, w, name in [(axes[0], w_erm, 'ERM'), (axes[1], w_irm, 'IRM')]:
         ax.bar(feat_idx, w, color=bar_colors, edgecolor='white', linewidth=0.6, zorder=2)
@@ -241,23 +248,27 @@ def plot_final_weight_profile(erm_model, irm_model, train_envs, filename, datase
     plt.close()
 
 
-def plot_summary_panel(erm_hist, irm_hist, filename, dataset_name=''):
+def plot_summary_panel(erm_hist, irm_hist, filename, dataset_name='', ibirm_hist=None):
     """Grouped accuracy bar chart (Train / Val / Test) + key metrics table."""
     label = DATASET_LABEL.get(dataset_name, dataset_name)
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-    fig.suptitle(f'{label}  —  Summary', fontsize=13, fontweight='bold')
 
     split_keys = [('Val (ID)',    'val_acc'),
                   ('Test (OOD)', 'test_acc')]
     x     = np.arange(len(split_keys))
-    width = 0.32
 
     # Left: grouped bar chart
     ax = axes[0]
-    for hist, color, name, offset in [
-        (erm_hist, ERM_C, 'ERM', -width / 2),
-        (irm_hist, IRM_C, 'IRM',  width / 2),
-    ]:
+    models_bar = [
+        (erm_hist,   ERM_C,   'ERM'),
+        (irm_hist,   IRM_C,   'IRM'),
+    ]
+    if ibirm_hist:
+        models_bar.append((ibirm_hist, IBIRM_C, 'IB-IRM'))
+    n_models = len(models_bar)
+    width = 0.8 / n_models
+    offsets = np.linspace(-(n_models - 1) / 2, (n_models - 1) / 2, n_models) * width
+    for (hist, color, name), offset in zip(models_bar, offsets):
         vals = [hist[k][-1] if hist[k] else 0.0 for _, k in split_keys]
         bars = ax.bar(x + offset, vals, width, color=color, label=name,
                       edgecolor='white', linewidth=0.5)
@@ -272,21 +283,25 @@ def plot_summary_panel(erm_hist, irm_hist, filename, dataset_name=''):
     ax.legend(fontsize=11)
     ax.grid(True, alpha=0.2, axis='y')
 
-    # Right: metrics table  (ERM final / best, IRM final / best, Δ)
+    # Right: metrics table
     ax2 = axes[1]
     ax2.axis('off')
     rows_data   = []
     rows_labels = []
     for split_label, hist_key in split_keys:
-        e_vals = erm_hist[hist_key]
-        i_vals = irm_hist[hist_key]
-        e_fin  = e_vals[-1] if e_vals else float('nan')
-        i_fin  = i_vals[-1] if i_vals else float('nan')
-        delta  = i_fin - e_fin
-        rows_data.append([f'{e_fin:.4f}', f'{i_fin:.4f}', f'{delta:+.4f}'])
+        e_fin = erm_hist[hist_key][-1]  if erm_hist[hist_key]  else float('nan')
+        i_fin = irm_hist[hist_key][-1]  if irm_hist[hist_key]  else float('nan')
+        row = [f'{e_fin:.4f}', f'{i_fin:.4f}', f'{i_fin - e_fin:+.4f}']
+        if ibirm_hist:
+            ib_fin = ibirm_hist[hist_key][-1] if ibirm_hist[hist_key] else float('nan')
+            row += [f'{ib_fin:.4f}', f'{ib_fin - e_fin:+.4f}']
+        rows_data.append(row)
         rows_labels.append(split_label)
 
-    col_labels = ['ERM', 'IRM', '\u0394 (IRM−ERM)']
+    if ibirm_hist:
+        col_labels = ['ERM', 'IRM', '\u0394(IRM−ERM)', 'IB-IRM', '\u0394(IB-IRM−ERM)']
+    else:
+        col_labels = ['ERM', 'IRM', '\u0394 (IRM−ERM)']
     tbl = ax2.table(
         cellText=rows_data, rowLabels=rows_labels,
         colLabels=col_labels, loc='center', cellLoc='center',
@@ -295,6 +310,7 @@ def plot_summary_panel(erm_hist, irm_hist, filename, dataset_name=''):
     tbl.set_fontsize(10)
     tbl.scale(1.0, 2.4)
     for row_idx, row_vals in enumerate(rows_data, start=1):
+        # Colour last Δ column
         delta_val = float(row_vals[-1])
         cell = tbl[row_idx, len(col_labels) - 1]
         cell.set_facecolor('#d4edda' if delta_val >  0.005 else
@@ -306,7 +322,7 @@ def plot_summary_panel(erm_hist, irm_hist, filename, dataset_name=''):
     plt.close()
 
 
-def plot_results_table(erm_hist, irm_hist, filename):
+def plot_results_table(erm_hist, irm_hist, filename, ibirm_hist=None):
     """Standalone metrics table (no title, no bar chart) — for direct inclusion in papers."""
     split_keys = [('Val (ID)',    'val_acc'),
                   ('Test (OOD)', 'test_acc')]
@@ -314,17 +330,23 @@ def plot_results_table(erm_hist, irm_hist, filename):
     rows_data   = []
     rows_labels = []
     for split_label, hist_key in split_keys:
-        e_vals = erm_hist[hist_key]
-        i_vals = irm_hist[hist_key]
-        e_fin  = e_vals[-1] if e_vals else float('nan')
-        i_fin  = i_vals[-1] if i_vals else float('nan')
-        delta  = i_fin - e_fin
-        rows_data.append([f'{e_fin:.4f}', f'{i_fin:.4f}', f'{delta:+.4f}'])
+        e_fin = erm_hist[hist_key][-1]  if erm_hist[hist_key]  else float('nan')
+        i_fin = irm_hist[hist_key][-1]  if irm_hist[hist_key]  else float('nan')
+        row = [f'{e_fin:.4f}', f'{i_fin:.4f}', f'{i_fin - e_fin:+.4f}']
+        if ibirm_hist:
+            ib_fin = ibirm_hist[hist_key][-1] if ibirm_hist[hist_key] else float('nan')
+            row += [f'{ib_fin:.4f}', f'{ib_fin - e_fin:+.4f}']
+        rows_data.append(row)
         rows_labels.append(split_label)
 
-    col_labels = ['ERM', 'IRM', '\u0394 (IRM\u2212ERM)']
+    if ibirm_hist:
+        col_labels = ['ERM', 'IRM', '\u0394(IRM\u2212ERM)', 'IB-IRM', '\u0394(IB-IRM\u2212ERM)']
+        fig_w = 8.0
+    else:
+        col_labels = ['ERM', 'IRM', '\u0394 (IRM\u2212ERM)']
+        fig_w = 5.5
 
-    fig, ax = plt.subplots(figsize=(5.5, 1.6))
+    fig, ax = plt.subplots(figsize=(fig_w, 1.6))
     ax.axis('off')
 
     tbl = ax.table(
@@ -348,28 +370,35 @@ def plot_results_table(erm_hist, irm_hist, filename):
 # ─── Main entry point ─────────────────────────────────────────────────────────
 
 def generate_all_plots(erm_hist, irm_hist, erm_model, irm_model,
-                       train_envs, test_env, plot_dir, dataset_name):
-    """Generate all standard diagnostic plots for an ERM vs IRM experiment.
+                       train_envs, test_env, plot_dir, dataset_name,
+                       ibirm_hist=None, ibirm_model=None):
+    """Generate all standard diagnostic plots for an ERM vs IRM (vs IB-IRM) experiment.
 
     Args:
-        erm_hist / irm_hist : history dicts returned by train_erm / train_irm.
-        erm_model / irm_model : trained model objects.
+        erm_hist / irm_hist  : history dicts returned by train_erm / train_irm.
+        erm_model / irm_model: trained model objects.
         train_envs : list of training environments (used to read meta info).
         test_env   : OOD test environment (currently unused, reserved for future plots).
         plot_dir   : output directory (created if absent).
         dataset_name : key into DATASET_LABEL for the figure titles.
+        ibirm_hist   : optional history dict from train_ibirm.
+        ibirm_model  : optional trained IB-IRM model.
     """
     os.makedirs(plot_dir, exist_ok=True)
     print(f'\n--- Saving plots to {plot_dir}/ ---')
     plot_accuracy_curves(erm_hist, irm_hist,
-                         os.path.join(plot_dir, '01_accuracy.png'), dataset_name)
+                         os.path.join(plot_dir, '01_accuracy.png'), dataset_name,
+                         ibirm_hist=ibirm_hist)
     plot_loss_curves(erm_hist, irm_hist,
-                     os.path.join(plot_dir, '02_loss.png'), dataset_name)
+                     os.path.join(plot_dir, '02_loss.png'), dataset_name,
+                     ibirm_hist=ibirm_hist)
     plot_feature_weight_dynamics(erm_hist, irm_hist,
-                                 os.path.join(plot_dir, '03_weight_dynamics.png'), dataset_name)
+                                 os.path.join(plot_dir, '03_weight_dynamics.png'), dataset_name,
+                                 ibirm_hist=ibirm_hist)
     plot_final_weight_profile(erm_model, irm_model, train_envs,
                               os.path.join(plot_dir, '04_final_weights.png'), dataset_name)
     plot_summary_panel(erm_hist, irm_hist,
-                       os.path.join(plot_dir, '05_summary.png'), dataset_name)
+                       os.path.join(plot_dir, '05_summary.png'), dataset_name,
+                       ibirm_hist=ibirm_hist)
 
 

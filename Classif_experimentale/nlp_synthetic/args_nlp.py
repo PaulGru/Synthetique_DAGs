@@ -34,12 +34,14 @@ def make_nlp_parser() -> argparse.ArgumentParser:
         'nlp_sms_spam_conf_varying_pc',
         # ── AG News (causal : X → Y) ──
         'nlp_agnews_semi_anti_causal',
+        'nlp_agnews_semi_anti_causal_fixed_wrong',
         'nlp_agnews_source_selection',
+        'nlp_agnews_keyword_selection',
         'nlp_agnews_conf_varying_proxy',
         # ── SST-2 (anti-causal : Y → X) ──
         'nlp_sst2_semi_anti_causal',
         'nlp_sst2_selection',
-        'nlp_sst2_genre_selection',
+        'nlp_sst2_size_selection',
         'nlp_sst2_conf_varying_proxy',
         # ── IMDB (anti-causal : Y → X, textes longs) ──
         'nlp_imdb_conf_varying_proxy',
@@ -47,6 +49,9 @@ def make_nlp_parser() -> argparse.ArgumentParser:
         'nlp_imdb_selection',
         'nlp_imdb_size_selection',
         'nlp_imdb_br_selection',
+        'nlp_imdb_genres_size_selection',
+        'nlp_imdb_genres_semi_anti_causal',
+        'nlp_imdb_genres_conf_varying_proxy',
         # ── Amazon Books (causal : X → Y, utilité de la review) ──
         'nlp_amazon_semi_anti_causal',
         'nlp_amazon_size_selection',
@@ -54,14 +59,20 @@ def make_nlp_parser() -> argparse.ArgumentParser:
         'nlp_amazon_rating_natural',
         'nlp_amazon_keyword_selection',
         'nlp_amazon_sentiment_selection',
+        # ── Amazon Reviews Polarity 2013 (textes courts, catégorie spurieuse) ──
+        'nlp_amazon_category_selection',
     ])
 
     # ---- BERT config ----
-    p.add_argument('--nlp_bert_model', type=str, default='bert-base-uncased')
+    p.add_argument('--nlp_bert_model', type=str, default='distilbert-base-uncased')
     p.add_argument('--nlp_max_length', type=int, default=128,
                    help='Max token length for BERT (use 256 for AG News)')
+    p.add_argument('--nlp_max_length_chars', type=int, default=None,
+                   help='Max length in characters (for size filtering). Default None = no limit')
     p.add_argument('--nlp_pooling',    type=str, default='mean',
                    choices=['mean', 'cls'])
+    p.add_argument('--finetune_bert_layers', type=int, default=0,
+                   help='Number of final BERT layers to fine-tune (0 = frozen embeddings)')
 
     # ---- Semi anti-causal ----
     p.add_argument('--nlp_p_correct_train', type=float, nargs='+',
@@ -107,13 +118,13 @@ def make_nlp_parser() -> argparse.ArgumentParser:
     p.add_argument('--nlp_conf_a', type=float, default=0.0,
                    help='Fixed proxy noise a (conf_varying_gamma / conf_varying_pc)')
     p.add_argument('--nlp_conf_gamma_train', type=float, nargs='+', default=[0.8, 0.5],
-                   help='C→Y flip prob per train env (conf_varying_gamma)')
+                   help='C→Y alignment strength per train env (conf_varying_gamma)')
     p.add_argument('--nlp_conf_gamma_test', type=float, default=0.0,
-                   help='C→Y flip prob for OOD test (conf_varying_gamma)')
+                   help='C→Y alignment strength for OOD test (conf_varying_gamma)')
     p.add_argument('--nlp_conf_gamma', type=float, default=0.5,
-                   help='Fixed C→Y flip prob (conf_varying_pc only)')
+                   help='Fixed C→Y alignment strength (binary conf_varying_proxy / conf_varying_pc)')
     p.add_argument('--nlp_conf_p_c_flip', type=float, default=0.25,
-                   help='P(C=1) = flip rate for conf_varying_proxy (flip déterministe si C=1)')
+                   help='P(C=1), prevalence of the binary confounder in confounding variants')
     p.add_argument('--nlp_conf_pc_train', type=float, nargs='+', default=[0.8, 0.5],
                    help='Prevalence of C per train env (conf_varying_pc)')
     p.add_argument('--nlp_conf_pc_test', type=float, default=0.1,
@@ -144,5 +155,17 @@ def make_nlp_parser() -> argparse.ArgumentParser:
     # ---- Output ----
     p.add_argument('--plot_dir', type=str, default=None,
                    help='Plot output directory. Default: nlp_synthetic/plots/<dataset>/')
+
+    # ---- Amazon Reviews Polarity 2013 (category selection) ----
+    p.add_argument('--nlp_amzpol_n_target', type=int, default=60_000,
+                   help='Total reviews to load from Amazon Polarity 2013 (balanced per cat/label)')
+    p.add_argument('--nlp_amzpol_cat_pos', type=str, default='Electronics',
+                   help='Category correlated with positive label in training envs')
+    p.add_argument('--nlp_amzpol_cat_neg', type=str, default='Movies_and_TV',
+                   help='Category correlated with negative label in training envs')
+    p.add_argument('--nlp_amzpol_class_ratio_train', type=float, nargs='+', default=None,
+                   help='Fraction of positives per train env (ex: 0.5 0.5). None = no resampling.')
+    p.add_argument('--nlp_amzpol_class_ratio_test', type=float, default=None,
+                   help='Fraction of positives in test set. None = no resampling.')
 
     return p
