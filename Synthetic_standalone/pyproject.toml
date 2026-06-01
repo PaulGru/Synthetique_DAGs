@@ -1,0 +1,13 @@
+[project]
+name = "synthetic-irm-experiments"
+version = "0.1.0"
+description = "Synthetic IRM experiments: Semi-Anti-Causal, Selection Bias, Confounding"
+requires-python = ">=3.13"
+dependencies = [
+    "matplotlib>=3.10.7",
+    "numpy>=2.0",
+    "scikit-learn>=1.7.2",
+    "torch>=2.9.1",
+    "tqdm>=4.0",
+    "transformers>=4.57.3",
+]
