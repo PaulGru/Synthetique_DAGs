@@ -40,13 +40,9 @@ Usage:
     uv run nlp_synthetic/run_grand_test.py --run_name my_grand_test
 """
 
-import sys
 from pathlib import Path, Path as _Path
 
 _ROOT = _Path(__file__).resolve().parents[1]
-for _p in [str(_ROOT), str(_ROOT / 'irm'), str(_ROOT / 'nlp')]:
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
 
 import os
 import json
@@ -59,7 +55,7 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
-from data import (
+from data.nlp_datasets import (
     build_envs_ag_news_semi_anti_causal,
     build_envs_ag_news_size_selection,
     build_envs_ag_news_conf_varying_proxy,
@@ -70,8 +66,8 @@ from data import (
     build_envs_amazon_sentiment_selection,
     build_envs_amazon_conf_varying_proxy,
 )
-from training import train_erm, train_irm
-from evaluation import resolve_device
+from core.training import train_erm, train_irm
+from core.evaluation import resolve_device
 
 
 # =============================================================================
@@ -88,7 +84,7 @@ CORR_CONF          = [(0.01, 0.1)]
 # IRM penalty coefficients explored per run
 IRM_LAMBDAS = [50, 75, 100, 125]
 
-# Paramètres fixes par dataset
+# Fixed configuration per dataset
 _DATASET_CFG = {
     # ── AG News (4 classes) ──────────────────────────────────────────────────
     'nlp_agnews_semi_anti_causal': {
@@ -172,13 +168,13 @@ ALL_DATASETS = list(_DATASET_CFG.keys())
 
 
 # =============================================================================
-# Construction des environnements
+# Environment construction
 # =============================================================================
 
 def _build_envs(dataset: str, p1: float, p2: float, noise: float,
                 seed: int, cfg: dict, device_str: str,
                 bert_model: str, pooling: str):
-    """Construit (train_envs, val_envs, test_env) pour un point de la grille."""
+    """Build (train_envs, val_envs, test_env) for a single grid cell."""
     kwargs_common = dict(
         seed=seed,
         bert_model=bert_model,
@@ -254,11 +250,11 @@ def _build_envs(dataset: str, p1: float, p2: float, noise: float,
             **kwargs_common,
         )
 
-    raise ValueError(f"Dataset non supporté : {dataset}")
+    raise ValueError(f"Unsupported dataset: {dataset}")
 
 
 # =============================================================================
-# Nommage des dossiers
+# Folder naming
 # =============================================================================
 
 def _corr_tag(mechanism: str, p1: float, p2: float) -> str:
@@ -277,7 +273,7 @@ def _run_dir(root: Path, dataset_slug: str, noise: float,
 
 
 # =============================================================================
-# Visualisation des courbes d'apprentissage d'une cellule
+# Training curve visualisation for a grid cell
 # =============================================================================
 
 _MODEL_COLORS = {
@@ -298,9 +294,9 @@ _MODEL_LABELS = {
 
 def _plot_cell_curves(histories: dict, cell_dir: Path, title: str = '') -> None:
     """
-    Trace et sauvegarde les courbes loss + OOD accuracy pour un run.
+    Plot and save loss + OOD accuracy curves for a single run.
 
-    ``histories`` est un dict  {model_key: hist}  où hist a les clés
+    ``histories`` is a dict  {model_key: hist}  where hist has keys
     ``step``, ``loss``, ``test_acc``, ``val_acc``.
     """
     model_keys = list(histories.keys())
@@ -343,7 +339,7 @@ def _plot_cell_curves(histories: dict, cell_dir: Path, title: str = '') -> None:
 
 
 # =============================================================================
-# Une run : ERM + IRM sur une cellule de la grille
+# Single run: ERM + IRM on one grid cell
 # =============================================================================
 
 def run_cell(
@@ -358,7 +354,7 @@ def run_cell(
     n_classes  = cfg['n_classes']
     device_str = str(device)
 
-    # Config de la run
+    # Run configuration
     config = {
         'dataset':    dataset,
         'mechanism':  mechanism,
@@ -378,7 +374,7 @@ def run_cell(
     cell_dir.mkdir(parents=True, exist_ok=True)
     (cell_dir / 'config.json').write_text(json.dumps(config, indent=2))
 
-    # Helper: extrait les clés utiles d'une history
+    # Helper: extract the relevant keys from a history dict
     def _trim_hist(h):
         return {
             'step':     h['step'],
@@ -388,8 +384,7 @@ def run_cell(
         }
 
     per_seed = []
-    # Histoires moyennées sur toutes les seeds (pour le plot)
-    # On accumule par model_key les listes de courbes, puis on moyenne
+    # Curves averaged over seeds (for plotting): accumulated per model_key, then averaged
     all_histories: dict[str, list[dict]] = {}
 
     for seed in seeds:
@@ -447,7 +442,7 @@ def run_cell(
         if device_str.startswith('cuda'):
             torch.cuda.empty_cache()
 
-    # ── Agrégation multi-seeds ────────────────────────────────────────────────
+    # ── Multi-seed aggregation ────────────────────────────────────────────────
     def _agg_scalar(model_key, metric):
         vals = [r[model_key][metric] for r in per_seed
                 if not np.isnan(r[model_key][metric])]
@@ -455,7 +450,7 @@ def run_cell(
                 'values': vals} if vals else {'mean': float('nan'), 'std': 0.0, 'values': []}
 
     def _mean_curves(histories_list):
-        """Moyenne les courbes sur plusieurs seeds (step commun supposé)."""
+        """Average curves over multiple seeds (common step grid assumed)."""
         steps = histories_list[0]['step']
         return {
             'step':     steps,
@@ -476,8 +471,8 @@ def run_cell(
         if all_histories.get(key):
             mean_histories[key] = _mean_curves(all_histories[key])
 
-    # Pour compatibilité avec plot_grand_test.py (clés erm_final, irm_final…)
-    # on expose le meilleur IRM (meilleure final_mean parmi les lambdas)
+    # For compatibility with plot_grand_test.py (erm_final, irm_final keys),
+    # expose the best IRM (highest final_mean across lambdas)
     best_irm_key = max(
         (k for k in model_keys if k != 'erm'),
         key=lambda k: summary[k]['final']['mean'],
@@ -509,7 +504,7 @@ def run_cell(
     }
     (cell_dir / 'results.json').write_text(json.dumps(results, indent=2))
 
-    # ── Courbes d'apprentissage ───────────────────────────────────────────────
+    # ── Training curves ───────────────────────────────────────────────────────
     mech   = cfg['mechanism']
     noise_str = f"noise={noise:.3f}"
     corr_str  = _corr_tag(mech, p1, p2)
@@ -528,29 +523,29 @@ def make_parser():
         description="Full experiment grid: 3 datasets x 3 mechanisms x 4 noise levels x 2 correlations"
     )
     p.add_argument('--run_name',  type=str, default=None,
-                   help="Nom du dossier racine (défaut : timestamp YYYYmmdd_HHMMSS).")
+                   help="Root folder name (default: timestamp YYYYmmdd_HHMMSS).")
     p.add_argument('--out_root',  type=str, default=None,
-                   help="Chemin racine de sortie (défaut : plots/grand_test/).")
+                   help="Root output path (default: plots/grand_test/).")
     p.add_argument('--datasets',  type=str, nargs='+', default=None,
                    choices=ALL_DATASETS,
-                   help="Sous-ensemble de datasets à lancer (défaut : tous).")
+                   help="Subset of datasets to run (default: all).")
     p.add_argument('--resume',    action='store_true',
                    help='Skip cells where results.json already exists.')
 
     p.add_argument('--seeds',     type=int, nargs='+', default=[0],
-                   help="Seeds à lancer (défaut : 0).")
+                   help="Seeds to run (default: 0).")
 
     p.add_argument('--erm_steps', type=int,   default=35_000)
     p.add_argument('--erm_lr',    type=float, default=1e-4)
     p.add_argument('--irm_steps', type=int,   default=35_000)
     p.add_argument('--irm_lr',    type=float, default=1e-4)
     p.add_argument('--irm_lambdas', type=float, nargs='+', default=IRM_LAMBDAS,
-                   help="Liste des lambdas IRM à comparer (défaut : 50 75 100 125).")
+                   help="IRM penalty coefficients to compare (default: 50 75 100 125).")
 
     p.add_argument('--n_parts',     type=int,  default=1,
-                   help="Nombre de partitions de la grille (pour parallélisation).")
+                   help="Number of grid partitions (for parallelisation).")
     p.add_argument('--part',        type=int,  default=0,
-                   help="Indice de la partition à exécuter, 0-indexé (défaut : 0).")
+                   help="0-indexed partition to run (default: 0).")
 
     p.add_argument('--eval_every',  type=int,  default=500)
     p.add_argument('--device',      type=str,  default='auto')
@@ -572,13 +567,13 @@ if __name__ == '__main__':
 
     run_name = args.run_name or datetime.now().strftime('%Y%m%d_%H%M%S')
     out_root = Path(args.out_root) if args.out_root else \
-               _Path(__file__).parent / 'plots' / 'grand_test' / run_name
+               _ROOT / 'results' / 'grand_test' / run_name
     out_root.mkdir(parents=True, exist_ok=True)
     print(f"Results -> {out_root}\n")
 
     datasets = args.datasets or ALL_DATASETS
 
-    # Construire la liste complète de (dataset, p1, p2, noise)
+    # Build the full list of (dataset, p1, p2, noise) cells
     grid = []
     for ds in datasets:
         cfg  = _DATASET_CFG[ds]
@@ -588,7 +583,7 @@ if __name__ == '__main__':
             for noise in NOISE_LEVELS:
                 grid.append((ds, p1, p2, noise))
 
-    # Découpe de la grille pour parallélisation
+    # Slice the grid for parallelisation
     if args.n_parts > 1:
         grid = grid[args.part::args.n_parts]
 

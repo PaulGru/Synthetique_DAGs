@@ -13,9 +13,9 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 
-PLOTS_DIR = Path(__file__).parent / "plots" / "gap_sweep"
+PLOTS_DIR = Path(__file__).resolve().parents[1] / "results" / "gap_sweep"
 
-# ── Groupement par mécanisme ──────────────────────────────────────────────────
+# ── Mechanisms grouped by type ──────────────────────────────────────────────
 MECHANISMS = {
     "sac": {
         "title": "Semi-Anti-Causal — Gap Sweep",
@@ -43,9 +43,9 @@ MECHANISMS = {
     },
 }
 
-# ── Couleurs et styles ────────────────────────────────────────────────────────
+# ── Colours and line styles ────────────────────────────────────────────────────────────
 DATASET_COLORS = {
-    "IMDB Genres":  "#2471A3",   # bleu
+    "IMDB Genres":  "#2471A3",   # blue
     "Amazon Books": "#E67E22",   # orange
 }
 ERM_STYLE = dict(linestyle="-",  marker="o", linewidth=2.2, markersize=6)
@@ -68,7 +68,7 @@ def load_latest(slug: str):
 
 def main():
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_dir = Path(__file__).parent / "plots" / "gap_sweep_combined" / ts
+    out_dir = Path(__file__).resolve().parents[1] / "results" / "gap_sweep_combined" / ts
     out_dir.mkdir(parents=True, exist_ok=True)
 
     for mech_key, mech in MECHANISMS.items():

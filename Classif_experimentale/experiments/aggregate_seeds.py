@@ -2,10 +2,9 @@
 Aggregate per-seed result JSON files produced by main.py.
 
 Usage:
-    uv run nlp/aggregate_seeds.py
-    uv run nlp/aggregate_seeds.py --datasets nlp_agnews_semi_anti_causal nlp_agnews_size_selection
+    uv run experiments/aggregate_seeds.py
+    uv run experiments/aggregate_seeds.py --datasets nlp_agnews_semi_anti_causal nlp_agnews_size_selection
 """
-import sys
 import json
 import glob
 import argparse
@@ -13,7 +12,7 @@ import numpy as np
 from pathlib import Path
 
 _ROOT     = Path(__file__).resolve().parents[1]
-PLOTS_DIR = _ROOT / 'nlp' / 'plots'
+PLOTS_DIR = _ROOT / 'results'
 
 SLUG_MAP = {
     'nlp_agnews_semi_anti_causal':             'causal_agnews_sac',

@@ -1,16 +1,13 @@
-import sys
 import json
+import os
 from pathlib import Path as _Path
 
-_ROOT = _Path(__file__).resolve().parents[1]
-for _p in [str(_ROOT), str(_ROOT / 'irm'), str(_ROOT / 'nlp')]:
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
-
-import os
 import torch
-from args import make_nlp_parser
-from data import (
+import warnings
+warnings.filterwarnings('ignore')
+
+from experiments.args import make_nlp_parser
+from data.nlp_datasets import (
     build_envs_ag_news_semi_anti_causal,
     AG_NEWS_WRONG_CLASS,
     build_envs_ag_news_size_selection,
@@ -22,16 +19,14 @@ from data import (
     build_envs_amazon_conf_varying_proxy,
     build_envs_amazon_sentiment_selection,
 )
-from training import train_erm, train_irm
-from evaluation import resolve_device
-from plotting import (
+from core.training import train_erm, train_irm
+from core.evaluation import resolve_device
+from plotting.training_curves import (
     plot_accuracy_curves,
     plot_loss_curves,
     plot_summary_panel,
     plot_results_table,
 )
-import warnings
-warnings.filterwarnings('ignore')
 
 if __name__ == '__main__':
     args = make_nlp_parser().parse_args()
@@ -53,7 +48,7 @@ if __name__ == '__main__':
     }
     slug     = _SLUG_MAP.get(args.dataset, args.dataset.replace('nlp_', ''))
     plot_dir = args.plot_dir if args.plot_dir else os.path.join(
-        str(_ROOT / 'nlp' / 'plots'), slug
+        str(_ROOT / 'results'), slug
     )
     os.makedirs(plot_dir, exist_ok=True)
 

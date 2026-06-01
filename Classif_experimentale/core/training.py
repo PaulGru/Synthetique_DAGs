@@ -8,8 +8,8 @@ from tqdm import tqdm
 from torch.autograd import grad
 from torch.utils.data import TensorDataset, DataLoader, WeightedRandomSampler
 
-from env import Env
-from evaluation import (resolve_device, evaluate_binary, evaluate_group,
+from core.env import Env
+from core.evaluation import (resolve_device, evaluate_binary, evaluate_group,
                        evaluate_and_log_step, evaluate_env)
 
 def compute_accuracy(model: nn.Module, envs: List[Env], device: str = "cpu") -> float:

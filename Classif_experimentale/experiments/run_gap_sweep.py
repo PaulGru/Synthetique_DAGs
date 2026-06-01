@@ -11,13 +11,9 @@ Usage:
     uv run nlp_synthetic/run_gap_sweep_nlp.py --dataset nlp_agnews_conf_varying_proxy --gap_step 0.02
 """
 
-import sys
 from pathlib import Path as _Path
 
 _ROOT = _Path(__file__).resolve().parents[1]
-for _p in [str(_ROOT), str(_ROOT / 'irm'), str(_ROOT / 'nlp')]:
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
 
 import os
 import json
@@ -26,7 +22,7 @@ import torch
 import numpy as np
 import matplotlib.pyplot as plt
 
-from data import (
+from data.nlp_datasets import (
     build_envs_ag_news_semi_anti_causal,
     build_envs_ag_news_size_selection,
     build_envs_ag_news_conf_varying_proxy,
@@ -37,8 +33,8 @@ from data import (
     build_envs_amazon_sentiment_selection,
     build_envs_amazon_conf_varying_proxy,
 )
-from training import train_erm, train_irm
-from evaluation import resolve_device
+from core.training import train_erm, train_irm
+from core.evaluation import resolve_device
 
 # =============================================================================
 # Defaults par dataset
@@ -201,7 +197,7 @@ def make_gap_sweep_nlp_parser() -> argparse.ArgumentParser:
 
 
 # =============================================================================
-# Construction des envs selon dataset + gap
+# Environment construction per dataset and gap
 # =============================================================================
 def _build_envs(args, p1: float, p2: float):
     """Build (train_envs, val_envs, test_env) for a given dataset and gap."""
@@ -356,7 +352,7 @@ if __name__ == '__main__':
         }
         _slug = _SLUG_MAP.get(args.dataset, args.dataset)
         _ts   = datetime.now().strftime('%Y%m%d_%H%M%S')
-        args.out_dir = str(_Path(__file__).parent / 'plots' / 'gap_sweep' / _slug / _ts)
+        args.out_dir = str(_ROOT / 'results' / 'gap_sweep' / _slug / _ts)
 
     os.makedirs(args.out_dir, exist_ok=True)
 

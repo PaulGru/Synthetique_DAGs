@@ -1,14 +1,5 @@
 from __future__ import annotations
 
-import sys
-from pathlib import Path as _Path
-# Add project root and shared/ to Python path
-_ROOT = _Path(__file__).resolve().parents[1]
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
-if str(_ROOT / "irm") not in sys.path:
-    sys.path.insert(0, str(_ROOT / "irm"))
-
 # NLP environment builders for IRM experiments (AG News, IMDB Genres, Amazon Books).
 
 from dataclasses import dataclass
@@ -18,7 +9,7 @@ import numpy as np
 import torch
 from datasets import load_dataset
 from transformers import AutoTokenizer, AutoModel
-from env import Env
+from core.env import Env
 
 # =============================================================================
 # Spurious token configuration
@@ -35,49 +26,6 @@ def define_spurious_tokens() -> Dict[str, str]:
         "spam_correlated": "fire",
         "ham_correlated":  "sky",
     }
-
-# =============================================================================
-# SMS Spam dataset loader
-# =============================================================================
-
-def load_sms_spam_dataset(seed: int = 42) -> Tuple[List[str], List[int]]:
-    """
-    Charge le dataset SMS Spam depuis Hugging Face.
-
-    Dataset: mshenoda/spam-messages (59k messages)
-
-    Parameters
-    ----------
-    seed : int
-        Graine pour le shuffle du dataset.
-
-    Returns
-    -------
-    texts : List[str]
-        Liste des SMS (textes bruts).
-    labels : List[int]
-        Labels binaires (0=ham, 1=spam).
-    """
-    from datasets import concatenate_datasets
-
-    # Load dataset (~59k messages)
-    dataset = load_dataset("mshenoda/spam-messages")
-
-    # Merge all splits
-    all_data = concatenate_datasets([
-        dataset['train'],
-        dataset['validation'],
-        dataset['test']
-    ])
-
-    # Shuffle with fixed seed
-    all_data = all_data.shuffle(seed=seed)
-
-    # Extract texts and convert string labels to int
-    texts = all_data['text']
-    labels = [1 if label == 'spam' else 0 for label in all_data['label']]
-
-    return texts, labels
 
 # =============================================================================
 # Spurious token injection (SAC mechanism)
@@ -208,7 +156,7 @@ def tokenize_and_embed_with_bert(
 
     Optimisations:
     - Singleton BERT: model loaded once per process.
-    - Disk cache: embeddings saved to nlp_synthetic/.embed_cache/<hash>.npy.
+    - Disk cache: embeddings saved to data/.embed_cache/<hash>.npy.
     - Adaptive batch size: 256 on GPU/MPS, 64 on CPU.
 
     Parameters
@@ -294,7 +242,7 @@ def tokenize_and_embed_with_bert(
 
     return result
 
-# Noms lisibles des classes AG News (pour logs et diagnostics)
+# Human-readable AG News class names (used in logs and diagnostics)
 AG_NEWS_CLASS_NAMES: Dict[int, str] = {
     0: "World",
     1: "Sports",
@@ -399,7 +347,7 @@ def build_envs_ag_news_size_selection(
     all_lengths = [len(t) for t in all_texts]
     print(f"Loaded {len(all_texts)} articles")
 
-    # ── Seuils globaux de longueur (3 seuils → 4 bins) ───────────────────
+    # ── Global length thresholds (3 cutoffs → 4 bins) ───────────────────
     if threshold_method == "quartile":
         pcts = [25, 50, 75]
     elif threshold_method == "tertile":

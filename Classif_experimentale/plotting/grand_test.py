@@ -24,7 +24,7 @@ import numpy as np
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-ROOT = Path(__file__).parent / "plots" / "grand_test"
+ROOT = Path(__file__).resolve().parents[1] / "results" / "grand_test"
 
 MECH_LABELS = {
     "sac":       "SAC (token injection)",

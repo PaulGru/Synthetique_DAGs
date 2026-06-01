@@ -4,7 +4,7 @@ from typing import List, Optional
 import numpy as np
 import torch
 from torch import nn
-from env import Env
+from core.env import Env
 
 # =============================
 # Device

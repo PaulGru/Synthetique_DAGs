@@ -15,13 +15,9 @@ Usage:
     uv run nlp_synthetic/run_noise_sweep_nlp.py --dataset nlp_imdb_genres_size_selection --seeds 0 1 2
 """
 
-import sys
 from pathlib import Path as _Path
 
 _ROOT = _Path(__file__).resolve().parents[1]
-for _p in [str(_ROOT), str(_ROOT / 'irm'), str(_ROOT / 'nlp')]:
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
 
 import os
 import json
@@ -32,7 +28,7 @@ import torch
 import numpy as np
 import matplotlib.pyplot as plt
 
-from data import (
+from data.nlp_datasets import (
     build_envs_ag_news_semi_anti_causal,
     build_envs_ag_news_size_selection,
     build_envs_ag_news_conf_varying_proxy,
@@ -43,8 +39,8 @@ from data import (
     build_envs_amazon_sentiment_selection,
     build_envs_amazon_conf_varying_proxy,
 )
-from training import train_erm, train_irm
-from evaluation import resolve_device
+from core.training import train_erm, train_irm
+from core.evaluation import resolve_device
 
 
 # =============================================================================
@@ -235,7 +231,7 @@ def make_noise_sweep_nlp_parser() -> argparse.ArgumentParser:
 
     # ── Plot only ──
     p.add_argument('--plot_only', action='store_true',
-                   help='Relit noise_sweep_results.json depuis --out_dir et retrace uniquement le plot.')
+                   help='Re-read noise_sweep_results.json from --out_dir and regenerate the plot without rerunning training.')
 
     return p
 
@@ -439,17 +435,17 @@ if __name__ == '__main__':
     if args.out_dir is None:
         if args.plot_only:
             raise ValueError(
-                "--plot_only nécessite --out_dir pointant vers un dossier existant "
-                "contenant noise_sweep_results.json\n"
-                "Exemple : --out_dir nlp_synthetic/plots/noise_sweep/causal_amazon_sac/20260520_152427"
+                "--plot_only requires --out_dir pointing to an existing folder "
+                "containing noise_sweep_results.json\n"
+                "Example: --out_dir results/noise_sweep/causal_amazon_sac/20260520_152427"
             )
         _slug = _SLUG_MAP.get(args.dataset, args.dataset)
         _ts   = datetime.now().strftime('%Y%m%d_%H%M%S')
-        args.out_dir = str(_Path(__file__).parent / 'plots' / 'noise_sweep' / _slug / _ts)
+        args.out_dir = str(_ROOT / 'results' / 'noise_sweep' / _slug / _ts)
 
     os.makedirs(args.out_dir, exist_ok=True)
 
-    # ── Mode plot_only : relit le JSON et retrace sans entraîner ─────────────
+    # ── plot_only mode: reload JSON and regenerate plot without rerunning training ─────────────
     if args.plot_only:
         json_path = os.path.join(args.out_dir, 'noise_sweep_results.json')
         try:
@@ -457,13 +453,13 @@ if __name__ == '__main__':
                 saved = json.load(f)
         except FileNotFoundError:
             raise FileNotFoundError(
-                f"--plot_only : fichier introuvable : {json_path}\n"
-                f"Vérifie que --out_dir pointe vers un dossier contenant noise_sweep_results.json"
+                f"--plot_only: file not found: {json_path}\n"
+                f"Make sure --out_dir points to a folder containing noise_sweep_results.json"
             ) from None
         except json.JSONDecodeError as e:
             raise ValueError(
-                f"--plot_only : fichier JSON invalide ou incomplet : {json_path}\n"
-                f"Détail : {e}"
+                f"--plot_only: invalid or incomplete JSON file: {json_path}\n"
+                f"Detail: {e}"
             ) from None
         _plot_noise_sweep(
             out_dir=args.out_dir,

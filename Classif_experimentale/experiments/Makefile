@@ -18,6 +18,56 @@
 THIS_DIR  = $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 ROOT      = $(abspath $(THIS_DIR)/..)
 
+# ─────────────────────────────────────────────────────────────────────────────
+# help
+# ─────────────────────────────────────────────────────────────────────────────
+help:
+	@echo ""
+	@echo "Usage: make <target> [DEVICE=cuda:0] [NLP_SEED=0] [SEEDS='0 1 2']"
+	@echo ""
+	@echo "Single-run targets (1 dataset × 1 mechanism, seed = NLP_SEED)"
+	@echo "  nlp_agnews_semi_anti_causal          AG News  – SAC (token injection)"
+	@echo "  nlp_agnews_size_selection             AG News  – Size selection bias"
+	@echo "  nlp_agnews_conf_varying_proxy         AG News  – Confounding proxy"
+	@echo "  nlp_imdb_genres_semi_anti_causal      IMDB     – SAC"
+	@echo "  nlp_imdb_genres_size_selection        IMDB     – Size selection"
+	@echo "  nlp_imdb_genres_conf_varying_proxy    IMDB     – Confounding"
+	@echo "  nlp_amazon_semi_anti_causal           Amazon   – SAC"
+	@echo "  nlp_amazon_sentiment_selection        Amazon   – Sentiment selection"
+	@echo "  nlp_amazon_conf_varying_proxy         Amazon   – Confounding"
+	@echo ""
+	@echo "Multi-seed targets (loop over SEEDS, then aggregate)"
+	@echo "  all_nlp_agnews                        All 3 mechanisms for AG News"
+	@echo "  all_nlp_imdb_genres                   All 3 mechanisms for IMDB"
+	@echo "  all_nlp_amazon                        All 3 mechanisms for Amazon"
+	@echo ""
+	@echo "Gap sweep targets (sweep train/test correlation gap)"
+	@echo "  gap_sweep_agnews_sac/size/conf"
+	@echo "  gap_sweep_imdb_genres_sac/size_selection/conf"
+	@echo "  gap_sweep_amazon_sac/sentiment_selection/conf"
+	@echo ""
+	@echo "Noise sweep targets (sweep noise level at fixed gap)"
+	@echo "  noise_sweep_agnews_sac/size/conf"
+	@echo "  noise_sweep_imdb_genres_sac/size_selection/conf"
+	@echo "  noise_sweep_amazon_sac/sentiment_selection/conf"
+	@echo "  all_noise_sweep_agnews / all_noise_sweep_imdb_genres / all_noise_sweep_amazon"
+	@echo ""
+	@echo "Grand test targets (full grid)"
+	@echo "  grand_test                  Full grid (sequential)"
+	@echo "  grand_test_resume           Resume interrupted run"
+	@echo "  grand_test_agnews           Only AG News cells"
+	@echo "  grand_test_imdb             Only IMDB cells"
+	@echo "  grand_test_amazon           Only Amazon cells"
+	@echo "  grand_test_part0/1/2/3      Quarter of the grid (for 4-GPU parallelism)"
+	@echo ""
+	@echo "Key variables:"
+	@echo "  DEVICE=auto|cpu|cuda|cuda:N   Target device           (default: auto)"
+	@echo "  NLP_SEED=N                    Seed for single-run targets (default: 0)"
+	@echo "  SEEDS='0 1 2'                 Seeds for all_nlp_* targets (default: 0 1 2)"
+	@echo "  GRAND_TEST_RUN_NAME=name      Output folder name for grand test"
+	@echo "  GRAND_TEST_SEEDS='0 1 2'      Seeds for grand test grid"
+	@echo ""
+
 PYTHON    = uv run
 DEVICE    = auto
 EVAL_EVERY ?= 20
@@ -46,7 +96,7 @@ AGNN_IRM_LR          ?= 1e-4
 AGNN_IRM_LAMBDA      ?= 100.0
 
 nlp_agnews_semi_anti_causal:
-	cd $(ROOT) && $(PYTHON) nlp/main.py \
+	cd $(ROOT) && $(PYTHON) experiments/main.py \
 		--dataset nlp_agnews_semi_anti_causal \
 		--nlp_p_correct_train $(AGNN_P_CORRECT_TRAIN) \
 		--nlp_p_correct_test $(AGNN_P_CORRECT_TEST) \
@@ -77,7 +127,7 @@ AGNS_SIZE_IRM_LR      ?= 1e-4
 AGNS_SIZE_IRM_LAMBDA  ?= 100.0
 
 nlp_agnews_size_selection:
-	cd $(ROOT) && $(PYTHON) nlp/main.py \
+	cd $(ROOT) && $(PYTHON) experiments/main.py \
 		--dataset nlp_agnews_size_selection \
 		--nlp_selection_p_train $(AGNS_SIZE_P_TRAIN) \
 		--nlp_label_flip $(AGNS_SIZE_LABEL_FLIP) \
@@ -109,7 +159,7 @@ AGNN_CONF_IRM_LAMBDA     ?= 100.0 #50
 AGNN_CONF_GAMMA          ?= 0.8
 
 nlp_agnews_conf_varying_proxy:
-	cd $(ROOT) && $(PYTHON) nlp/main.py \
+	cd $(ROOT) && $(PYTHON) experiments/main.py \
 		--dataset nlp_agnews_conf_varying_proxy \
 		--nlp_conf_a_train $(AGNN_CONF_PROXY_A_TRAIN) \
 		--nlp_conf_a_test $(AGNN_CONF_PROXY_A_TEST) \
@@ -132,7 +182,7 @@ all_nlp_agnews:
 		$(MAKE) -f $(THIS_DIR)Makefile nlp_agnews_size_selection     NLP_SEED=$$seed DEVICE=$(DEVICE) || exit 1; \
 		$(MAKE) -f $(THIS_DIR)Makefile nlp_agnews_conf_varying_proxy NLP_SEED=$$seed DEVICE=$(DEVICE) || exit 1; \
 	done
-	cd $(ROOT) && $(PYTHON) nlp/aggregate_seeds.py \
+	cd $(ROOT) && $(PYTHON) experiments/aggregate_seeds.py \
 		--datasets nlp_agnews_semi_anti_causal nlp_agnews_size_selection nlp_agnews_conf_varying_proxy
 
 
@@ -152,7 +202,7 @@ IMDB_GENRES_SAC_IRM_LR          ?= 1e-4
 IMDB_GENRES_SAC_IRM_LAMBDA      ?= 100.0
 
 nlp_imdb_genres_semi_anti_causal:
-	cd $(ROOT) && $(PYTHON) nlp/main.py \
+	cd $(ROOT) && $(PYTHON) experiments/main.py \
 		--dataset nlp_imdb_genres_semi_anti_causal \
 		--nlp_p_correct_train $(IMDB_GENRES_SAC_P_CORRECT_TRAIN) \
 		--nlp_p_correct_test $(IMDB_GENRES_SAC_P_CORRECT_TEST) \
@@ -182,7 +232,7 @@ IMDB_GENRES_SIZE_IRM_LR     ?= 1e-4
 IMDB_GENRES_SIZE_IRM_LAMBDA ?= 100.0
 
 nlp_imdb_genres_size_selection:
-	cd $(ROOT) && $(PYTHON) nlp/main.py \
+	cd $(ROOT) && $(PYTHON) experiments/main.py \
 		--dataset nlp_imdb_genres_size_selection \
 		--nlp_selection_p_train $(IMDB_GENRES_SIZE_P_TRAIN) \
 		--nlp_size_threshold_method $(IMDB_GENRES_SIZE_THRESHOLD) \
@@ -213,7 +263,7 @@ IMDB_GENRES_CONF_IRM_LAMBDA     ?= 100.0 #50
 IMDB_GENRES_CONF_GAMMA          ?= 0.5
 
 nlp_imdb_genres_conf_varying_proxy:
-	cd $(ROOT) && $(PYTHON) nlp/main.py \
+	cd $(ROOT) && $(PYTHON) experiments/main.py \
 		--dataset nlp_imdb_genres_conf_varying_proxy \
 		--nlp_conf_a_train $(IMDB_GENRES_CONF_PROXY_A_TRAIN) \
 		--nlp_conf_a_test $(IMDB_GENRES_CONF_PROXY_A_TEST) \
@@ -237,7 +287,7 @@ all_nlp_imdb_genres:
 		$(MAKE) -f $(THIS_DIR)Makefile nlp_imdb_genres_size_selection     NLP_SEED=$$seed DEVICE=$(DEVICE) || exit 1; \
 		$(MAKE) -f $(THIS_DIR)Makefile nlp_imdb_genres_conf_varying_proxy NLP_SEED=$$seed DEVICE=$(DEVICE) || exit 1; \
 	done
-	cd $(ROOT) && $(PYTHON) nlp/aggregate_seeds.py \
+	cd $(ROOT) && $(PYTHON) experiments/aggregate_seeds.py \
 		--datasets nlp_imdb_genres_semi_anti_causal nlp_imdb_genres_size_selection nlp_imdb_genres_conf_varying_proxy
 
 
@@ -259,7 +309,7 @@ AMAZON_SAC_IRM_LR          ?= 1e-4
 AMAZON_SAC_IRM_LAMBDA      ?= 100
 
 nlp_amazon_semi_anti_causal:
-	cd $(ROOT) && $(PYTHON) nlp/main.py \
+	cd $(ROOT) && $(PYTHON) experiments/main.py \
 		--dataset nlp_amazon_semi_anti_causal \
 		--nlp_p_correct_train $(AMAZON_SAC_P_CORRECT_TRAIN) \
 		--nlp_p_correct_test $(AMAZON_SAC_P_CORRECT_TEST) \
@@ -278,11 +328,11 @@ nlp_amazon_semi_anti_causal:
 		--device $(DEVICE)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Amazon Books — Sentiment Selection (note comme proxy trompeur d'utilité)
+# Amazon Books — Sentiment Selection (usefulness as a misleading proxy)
 # ─────────────────────────────────────────────────────────────────────────────
-# Typique : utile + positif (5★), OU inutile + négatif (1★)
-# OOD     : utile + négatif (1★), OU inutile + positif (5★)
-# Le modèle apprend "sentiment → utilité", raccourci qui casse au test OOD
+# Typical : useful + positive (5★), OR useless + negative (1★)
+# OOD     : useful + negative (1★), OR useless + positive (5★)
+# The model learns "sentiment → usefulness", a shortcut that breaks at OOD test
 AMAZON_SENT_P_TRAIN    ?= 0.9 0.7 
 AMAZON_SENT_LABEL_FLIP ?= 0.0
 AMAZON_SENT_ERM_STEPS  ?= 25_000
@@ -292,7 +342,7 @@ AMAZON_SENT_IRM_LR     ?= 1e-4
 AMAZON_SENT_IRM_LAMBDA ?= 100.0
 
 nlp_amazon_sentiment_selection:
-	cd $(ROOT) && $(PYTHON) nlp/main.py \
+	cd $(ROOT) && $(PYTHON) experiments/main.py \
 		--dataset nlp_amazon_sentiment_selection \
 		--nlp_selection_p_train $(AMAZON_SENT_P_TRAIN) \
 		--nlp_label_flip $(AMAZON_SENT_LABEL_FLIP) \
@@ -323,7 +373,7 @@ AMAZON_CONF_IRM_LAMBDA     ?= 100.0 #50
 AMAZON_CONF_GAMMA          ?= 0.8
 
 nlp_amazon_conf_varying_proxy:
-	cd $(ROOT) && $(PYTHON) nlp/main.py \
+	cd $(ROOT) && $(PYTHON) experiments/main.py \
 		--dataset nlp_amazon_conf_varying_proxy \
 		--nlp_conf_a_train $(AMAZON_CONF_PROXY_A_TRAIN) \
 		--nlp_conf_a_test $(AMAZON_CONF_PROXY_A_TEST) \
@@ -348,17 +398,17 @@ all_nlp_amazon:
 		$(MAKE) -f $(THIS_DIR)Makefile nlp_amazon_conf_varying_proxy    NLP_SEED=$$seed DEVICE=$(DEVICE) || exit 1; \
 		$(MAKE) -f $(THIS_DIR)Makefile nlp_amazon_sentiment_selection   NLP_SEED=$$seed DEVICE=$(DEVICE) || exit 1; \
 	done
-	cd $(ROOT) && $(PYTHON) nlp/aggregate_seeds.py \
+	cd $(ROOT) && $(PYTHON) experiments/aggregate_seeds.py \
 		--datasets nlp_amazon_semi_anti_causal nlp_amazon_conf_varying_proxy nlp_amazon_sentiment_selection
 
 
 # =============================================================================
-# Gap sweep NLP — balayage de la force de corrélation trompeuse
+# Gap sweep NLP — sweep of the spurious correlation strength
 # =============================================================================
 
 # ── AG News ──────────────────────────────────────────────────────────────────
 gap_sweep_agnews_sac:
-	cd $(ROOT) && $(PYTHON) nlp/run_gap_sweep.py \
+	cd $(ROOT) && $(PYTHON) experiments/run_gap_sweep.py \
 		--dataset nlp_agnews_semi_anti_causal \
 		--nlp_max_length 256 \
 		--nlp_label_flip $(AGNN_LABEL_FLIP) \
@@ -369,7 +419,7 @@ gap_sweep_agnews_sac:
 		--eval_every $(EVAL_EVERY) --seeds 0 1 2 --device $(DEVICE)
 
 gap_sweep_agnews_size:
-	cd $(ROOT) && $(PYTHON) nlp/run_gap_sweep.py \
+	cd $(ROOT) && $(PYTHON) experiments/run_gap_sweep.py \
 		--dataset nlp_agnews_size_selection \
 		--nlp_max_length 256 \
 		--nlp_label_flip $(AGNS_SIZE_LABEL_FLIP) \
@@ -381,7 +431,7 @@ gap_sweep_agnews_size:
 		--eval_every $(EVAL_EVERY) --seeds 0 1 2 --device $(DEVICE)
 
 gap_sweep_agnews_conf:
-	cd $(ROOT) && $(PYTHON) nlp/run_gap_sweep.py \
+	cd $(ROOT) && $(PYTHON) experiments/run_gap_sweep.py \
 		--dataset nlp_agnews_conf_varying_proxy \
 		--nlp_max_length 256 \
 		--nlp_conf_p_c_flip $(AGNN_CONF_PROXY_P_C_FLIP) \
@@ -393,7 +443,7 @@ gap_sweep_agnews_conf:
 
 # ── IMDB Genres ────────────────────────────────────────────────────────
 gap_sweep_imdb_genres_sac:
-	cd $(ROOT) && $(PYTHON) nlp/run_gap_sweep.py \
+	cd $(ROOT) && $(PYTHON) experiments/run_gap_sweep.py \
 		--dataset nlp_imdb_genres_semi_anti_causal \
 		--nlp_max_length 256 \
 		--nlp_label_flip 0.25 \
@@ -402,7 +452,7 @@ gap_sweep_imdb_genres_sac:
 		--eval_every $(EVAL_EVERY) --seeds 0 1 2 --device $(DEVICE)
 
 gap_sweep_imdb_genres_size_selection:
-	cd $(ROOT) && $(PYTHON) nlp/run_gap_sweep.py \
+	cd $(ROOT) && $(PYTHON) experiments/run_gap_sweep.py \
 		--dataset nlp_imdb_genres_size_selection \
 		--nlp_max_length 256 \
 		--nlp_size_threshold_method quartile \
@@ -412,7 +462,7 @@ gap_sweep_imdb_genres_size_selection:
 		--eval_every $(EVAL_EVERY) --seeds 0 --device $(DEVICE)
 
 gap_sweep_imdb_genres_conf:
-	cd $(ROOT) && $(PYTHON) nlp/run_gap_sweep.py \
+	cd $(ROOT) && $(PYTHON) experiments/run_gap_sweep.py \
 		--dataset nlp_imdb_genres_conf_varying_proxy \
 		--nlp_conf_p_c_flip $(IMDB_GENRES_CONF_PROXY_P_C_FLIP) \
 		--nlp_max_length 256 \
@@ -423,7 +473,7 @@ gap_sweep_imdb_genres_conf:
 
 # ── Amazon ────────────────────────────────────────────────────────────────────
 gap_sweep_amazon_sac:
-	cd $(ROOT) && $(PYTHON) nlp/run_gap_sweep.py \
+	cd $(ROOT) && $(PYTHON) experiments/run_gap_sweep.py \
 		--dataset nlp_amazon_semi_anti_causal \
 		--nlp_max_length 512 \
 		--nlp_label_flip $(AMAZON_SAC_LABEL_FLIP) \
@@ -433,7 +483,7 @@ gap_sweep_amazon_sac:
 		--eval_every $(EVAL_EVERY) --seeds 0 1 2 --device $(DEVICE)
 
 gap_sweep_amazon_sentiment_selection:
-	cd $(ROOT) && $(PYTHON) nlp/run_gap_sweep.py \
+	cd $(ROOT) && $(PYTHON) experiments/run_gap_sweep.py \
 		--dataset nlp_amazon_sentiment_selection \
 		--nlp_max_length 512 \
 		--nlp_label_flip $(AMAZON_SENT_LABEL_FLIP) \
@@ -443,7 +493,7 @@ gap_sweep_amazon_sentiment_selection:
 		--eval_every $(EVAL_EVERY) --seeds 0 1 2 --device $(DEVICE)
 
 gap_sweep_amazon_conf:
-	cd $(ROOT) && $(PYTHON) nlp/run_gap_sweep.py \
+	cd $(ROOT) && $(PYTHON) experiments/run_gap_sweep.py \
 		--dataset nlp_amazon_conf_varying_proxy \
 		--nlp_max_length 512 \
 		--nlp_conf_p_c_flip $(AMAZON_CONF_PROXY_P_C_FLIP) \
@@ -455,14 +505,14 @@ gap_sweep_amazon_conf:
 
 
 # =============================================================================
-# Noise sweep NLP — balayage du bruit (label_flip ou gamma) à gap fixe
+# Noise sweep NLP — sweep of noise (label_flip or gamma) at fixed gap
 # =============================================================================
-# Pour semi_anti_causal / selection : noise = label_flip (0 → 0.5)
-# Pour conf_varying_proxy           : noise = gamma      (0 → 1.0)
+# For semi_anti_causal / selection : noise = label_flip (0 → 0.5)
+# For conf_varying_proxy           : noise = gamma      (0 → 1.0)
 
 # ── AG News ──────────────────────────────────────────────────────────────────
 noise_sweep_agnews_sac:
-	cd $(ROOT) && $(PYTHON) nlp/run_noise_sweep.py \
+	cd $(ROOT) && $(PYTHON) experiments/run_noise_sweep.py \
 		--dataset nlp_agnews_semi_anti_causal \
 		--nlp_max_length 256 \
 		--nlp_agnews_class_dist_train $(AGNEWS_CLASS_DIST_TRAIN) \
@@ -472,7 +522,7 @@ noise_sweep_agnews_sac:
 		--eval_every $(EVAL_EVERY) --seeds 0 1 2 --device $(DEVICE)
 
 noise_sweep_agnews_size:
-	cd $(ROOT) && $(PYTHON) nlp/run_noise_sweep.py \
+	cd $(ROOT) && $(PYTHON) experiments/run_noise_sweep.py \
 		--dataset nlp_agnews_size_selection \
 		--nlp_max_length 256 \
 		--nlp_size_threshold_method $(AGNS_SIZE_THRESHOLD) \
@@ -485,7 +535,7 @@ noise_sweep_agnews_size:
 		--eval_every $(EVAL_EVERY) --seeds 0 --device $(DEVICE)
 
 noise_sweep_agnews_conf:
-	cd $(ROOT) && $(PYTHON) nlp/run_noise_sweep.py \
+	cd $(ROOT) && $(PYTHON) experiments/run_noise_sweep.py \
 		--dataset nlp_agnews_conf_varying_proxy \
 		--nlp_max_length 256 \
 		--nlp_conf_p_c_flip $(AGNN_CONF_PROXY_P_C_FLIP) \
@@ -496,7 +546,7 @@ noise_sweep_agnews_conf:
 
 # ── IMDB Genres ──────────────────────────────────────────────────────────────
 noise_sweep_imdb_genres_sac:
-	cd $(ROOT) && $(PYTHON) nlp/run_noise_sweep.py \
+	cd $(ROOT) && $(PYTHON) experiments/run_noise_sweep.py \
 		--dataset nlp_imdb_genres_semi_anti_causal \
 		--nlp_max_length 256 \
 		--erm_steps 25_000 --erm_lr 5e-4 \
@@ -504,7 +554,7 @@ noise_sweep_imdb_genres_sac:
 		--eval_every $(EVAL_EVERY) --seeds 0 1 2 --device $(DEVICE)
 
 noise_sweep_imdb_genres_size_selection:
-	cd $(ROOT) && $(PYTHON) nlp/run_noise_sweep.py \
+	cd $(ROOT) && $(PYTHON) experiments/run_noise_sweep.py \
 		--dataset nlp_imdb_genres_size_selection \
 		--nlp_max_length 256 \
 		--nlp_size_threshold_method quartile \
@@ -515,7 +565,7 @@ noise_sweep_imdb_genres_size_selection:
 		--eval_every $(EVAL_EVERY) --seeds 0 --device $(DEVICE)
 
 noise_sweep_imdb_genres_conf:
-	cd $(ROOT) && $(PYTHON) nlp/run_noise_sweep.py \
+	cd $(ROOT) && $(PYTHON) experiments/run_noise_sweep.py \
 		--dataset nlp_imdb_genres_conf_varying_proxy \
 		--nlp_conf_p_c_flip $(IMDB_GENRES_CONF_PROXY_P_C_FLIP) \
 		--nlp_max_length 256 \
@@ -526,7 +576,7 @@ noise_sweep_imdb_genres_conf:
 
 # ── Amazon ────────────────────────────────────────────────────────────────────
 noise_sweep_amazon_sac:
-	cd $(ROOT) && $(PYTHON) nlp/run_noise_sweep.py \
+	cd $(ROOT) && $(PYTHON) experiments/run_noise_sweep.py \
 		--dataset nlp_amazon_semi_anti_causal \
 		--nlp_max_length 512 \
 		--nlp_amazon_n_target $(AMAZON_N_TARGET) \
@@ -535,7 +585,7 @@ noise_sweep_amazon_sac:
 		--eval_every $(EVAL_EVERY) --seeds 0 1 2 --device $(DEVICE)
 
 noise_sweep_amazon_sentiment_selection:
-	cd $(ROOT) && $(PYTHON) nlp/run_noise_sweep.py \
+	cd $(ROOT) && $(PYTHON) experiments/run_noise_sweep.py \
 		--dataset nlp_amazon_sentiment_selection \
 		--nlp_max_length 512 \
 		--nlp_amazon_n_target $(AMAZON_N_TARGET) \
@@ -544,7 +594,7 @@ noise_sweep_amazon_sentiment_selection:
 		--eval_every $(EVAL_EVERY) --seeds 0 --device $(DEVICE)
 
 noise_sweep_amazon_conf:
-	cd $(ROOT) && $(PYTHON) nlp/run_noise_sweep.py \
+	cd $(ROOT) && $(PYTHON) experiments/run_noise_sweep.py \
 		--dataset nlp_amazon_conf_varying_proxy \
 		--nlp_max_length 512 \
 		--nlp_conf_p_c_flip $(AMAZON_CONF_PROXY_P_C_FLIP) \
@@ -559,31 +609,31 @@ all_noise_sweep_agnews: noise_sweep_agnews_sac noise_sweep_agnews_size noise_swe
 
 
 # =============================================================================
-# Grand test — 3 datasets × 3 mécanismes × 4 bruits × 2 corrélations (72 runs)
+# Grand test — 3 datasets × 3 mechanisms × 4 noise levels × 2 correlations (72 runs)
 # =============================================================================
-# Grille :
-#   Bruit (label_flip / gamma) : 0.0  0.1  0.2  0.25
-#   Corrélation SAC/selection  : p=[1.0,0.8]  p=[0.9,0.7]
-#   Corrélation confounder     : a=[0.01,0.1] a=[0.05,0.15]
+# Grid:
+#   Noise (label_flip / gamma)       : 0.0  0.1  0.2  0.25
+#   Spurious correlation SAC/selection : p=[1.0,0.8]  p=[0.9,0.7]
+#   Spurious correlation confounder    : a=[0.01,0.1] a=[0.05,0.15]
 #
-# Options utiles :
+# Useful options:
 #   make grand_test DEVICE=cuda:1
 #   make grand_test GRAND_TEST_RUN_NAME=my_run
 #   make grand_test GRAND_TEST_SEEDS="0 1 2"
 #   make grand_test GRAND_TEST_DATASETS="nlp_agnews_semi_anti_causal nlp_imdb_genres_conf_varying_proxy"
-#   make grand_test_resume    # reprend une run interrompue (même run_name)
+#   make grand_test_resume    # resume an interrupted run (same run_name)
 
 GRAND_TEST_RUN_NAME ?=
 GRAND_TEST_SEEDS    ?= 0
 GRAND_TEST_DATASETS ?=
 
-# Fallback timestamp si GRAND_TEST_RUN_NAME est vide (même si passé explicitement vide)
+# Fallback timestamp if GRAND_TEST_RUN_NAME is empty (even if explicitly passed empty)
 _GT_RUN_NAME = $(or $(GRAND_TEST_RUN_NAME),$(shell date +%Y%m%d_%H%M%S))
 
 _GRAND_TEST_DATASETS_FLAG = $(if $(GRAND_TEST_DATASETS),--datasets $(GRAND_TEST_DATASETS),)
 
 grand_test:
-	cd $(ROOT) && $(PYTHON) nlp/run_grand_test.py \
+	cd $(ROOT) && $(PYTHON) experiments/run_grand_test.py \
 		--run_name $(_GT_RUN_NAME) \
 		--seeds $(GRAND_TEST_SEEDS) \
 		$(_GRAND_TEST_DATASETS_FLAG) \
@@ -593,7 +643,7 @@ grand_test:
 		--device $(DEVICE)
 
 grand_test_resume:
-	cd $(ROOT) && $(PYTHON) nlp/run_grand_test.py \
+	cd $(ROOT) && $(PYTHON) experiments/run_grand_test.py \
 		--run_name $(_GT_RUN_NAME) \
 		--seeds $(GRAND_TEST_SEEDS) \
 		$(_GRAND_TEST_DATASETS_FLAG) \
@@ -603,8 +653,8 @@ grand_test_resume:
 		--eval_every $(EVAL_EVERY) \
 		--device $(DEVICE)
 
-# ── Split en 3 pour parallélisation (même run_name → même dossier de sortie) ─
-# Lancer sur 3 terminaux tmux différents avec le même GRAND_TEST_RUN_NAME :
+# ── Split into 3 for parallelisation (same run_name → same output folder) ───────
+# Launch on 3 different tmux terminals with the same GRAND_TEST_RUN_NAME:
 #   make grand_test_agnews  GRAND_TEST_RUN_NAME=myrun DEVICE=cuda:0 &
 #   make grand_test_imdb    GRAND_TEST_RUN_NAME=myrun DEVICE=cuda:0 &
 #   make grand_test_amazon  GRAND_TEST_RUN_NAME=myrun DEVICE=cuda:0 &
@@ -614,7 +664,7 @@ _IMDB_DATASETS    = nlp_imdb_genres_semi_anti_causal nlp_imdb_genres_size_select
 _AMAZON_DATASETS  = nlp_amazon_semi_anti_causal nlp_amazon_sentiment_selection nlp_amazon_conf_varying_proxy
 
 grand_test_agnews:
-	cd $(ROOT) && $(PYTHON) nlp/run_grand_test.py \
+	cd $(ROOT) && $(PYTHON) experiments/run_grand_test.py \
 		--run_name $(_GT_RUN_NAME) \
 		--datasets $(_AGNEWS_DATASETS) \
 		--seeds $(GRAND_TEST_SEEDS) \
@@ -624,7 +674,7 @@ grand_test_agnews:
 		--device $(DEVICE)
 
 grand_test_imdb:
-	cd $(ROOT) && $(PYTHON) nlp/run_grand_test.py \
+	cd $(ROOT) && $(PYTHON) experiments/run_grand_test.py \
 		--run_name $(_GT_RUN_NAME) \
 		--datasets $(_IMDB_DATASETS) \
 		--seeds $(GRAND_TEST_SEEDS) \
@@ -634,7 +684,7 @@ grand_test_imdb:
 		--device $(DEVICE)
 
 grand_test_amazon:
-	cd $(ROOT) && $(PYTHON) nlp/run_grand_test.py \
+	cd $(ROOT) && $(PYTHON) experiments/run_grand_test.py \
 		--run_name $(_GT_RUN_NAME) \
 		--datasets $(_AMAZON_DATASETS) \
 		--seeds $(GRAND_TEST_SEEDS) \
@@ -644,7 +694,7 @@ grand_test_amazon:
 		--device $(DEVICE)
 
 grand_test_resume_agnews:
-	cd $(ROOT) && $(PYTHON) nlp/run_grand_test.py \
+	cd $(ROOT) && $(PYTHON) experiments/run_grand_test.py \
 		--run_name $(_GT_RUN_NAME) \
 		--datasets $(_AGNEWS_DATASETS) \
 		--seeds $(GRAND_TEST_SEEDS) --resume \
@@ -654,7 +704,7 @@ grand_test_resume_agnews:
 		--device $(DEVICE)
 
 grand_test_resume_imdb:
-	cd $(ROOT) && $(PYTHON) nlp/run_grand_test.py \
+	cd $(ROOT) && $(PYTHON) experiments/run_grand_test.py \
 		--run_name $(_GT_RUN_NAME) \
 		--datasets $(_IMDB_DATASETS) \
 		--seeds $(GRAND_TEST_SEEDS) --resume \
@@ -664,7 +714,7 @@ grand_test_resume_imdb:
 		--device $(DEVICE)
 
 grand_test_resume_amazon:
-	cd $(ROOT) && $(PYTHON) nlp/run_grand_test.py \
+	cd $(ROOT) && $(PYTHON) experiments/run_grand_test.py \
 		--run_name $(_GT_RUN_NAME) \
 		--datasets $(_AMAZON_DATASETS) \
 		--seeds $(GRAND_TEST_SEEDS) --resume \
@@ -673,10 +723,10 @@ grand_test_resume_amazon:
 		--eval_every $(EVAL_EVERY) \
 		--device $(DEVICE)
 
-# ── Split en 4 pour parallélisation SAC + Selection (sans confounder) ────────
-# 48 cellules / 4 = 12 par partie (round-robin : chaque partie contient un mix
-# équilibré des 3 datasets et des 2 mécanismes).
-# Lancer sur 4 terminaux tmux avec le même GRAND_TEST_RUN_NAME et des GPUs différents :
+# ── Split into 4 for parallelisation of SAC + Selection (no confounder) ───────
+# 48 cells / 4 = 12 per part (round-robin: each part contains a balanced mix
+# of the 3 datasets and 2 mechanisms).
+# Launch on 4 tmux terminals with the same GRAND_TEST_RUN_NAME and different GPUs:
 #   make grand_test_part0 GRAND_TEST_RUN_NAME=myrun DEVICE=cuda:0
 #   make grand_test_part1 GRAND_TEST_RUN_NAME=myrun DEVICE=cuda:1
 #   make grand_test_part2 GRAND_TEST_RUN_NAME=myrun DEVICE=cuda:2
@@ -687,7 +737,7 @@ _SAC_SEL_DATASETS = nlp_agnews_semi_anti_causal nlp_agnews_size_selection \
                     nlp_amazon_semi_anti_causal nlp_amazon_sentiment_selection
 
 grand_test_part0:
-	cd $(ROOT) && $(PYTHON) nlp/run_grand_test.py \
+	cd $(ROOT) && $(PYTHON) experiments/run_grand_test.py \
 		--run_name $(_GT_RUN_NAME) \
 		--datasets $(_SAC_SEL_DATASETS) \
 		--seeds $(GRAND_TEST_SEEDS) \
@@ -698,7 +748,7 @@ grand_test_part0:
 		--device $(DEVICE)
 
 grand_test_part1:
-	cd $(ROOT) && $(PYTHON) nlp/run_grand_test.py \
+	cd $(ROOT) && $(PYTHON) experiments/run_grand_test.py \
 		--run_name $(_GT_RUN_NAME) \
 		--datasets $(_SAC_SEL_DATASETS) \
 		--seeds $(GRAND_TEST_SEEDS) \
@@ -709,7 +759,7 @@ grand_test_part1:
 		--device $(DEVICE)
 
 grand_test_part2:
-	cd $(ROOT) && $(PYTHON) nlp/run_grand_test.py \
+	cd $(ROOT) && $(PYTHON) experiments/run_grand_test.py \
 		--run_name $(_GT_RUN_NAME) \
 		--datasets $(_SAC_SEL_DATASETS) \
 		--seeds $(GRAND_TEST_SEEDS) \
@@ -720,7 +770,7 @@ grand_test_part2:
 		--device $(DEVICE)
 
 grand_test_part3:
-	cd $(ROOT) && $(PYTHON) nlp/run_grand_test.py \
+	cd $(ROOT) && $(PYTHON) experiments/run_grand_test.py \
 		--run_name $(_GT_RUN_NAME) \
 		--datasets $(_SAC_SEL_DATASETS) \
 		--seeds $(GRAND_TEST_SEEDS) \
@@ -731,7 +781,7 @@ grand_test_part3:
 		--device $(DEVICE)
 
 grand_test_resume_part0:
-	cd $(ROOT) && $(PYTHON) nlp/run_grand_test.py \
+	cd $(ROOT) && $(PYTHON) experiments/run_grand_test.py \
 		--run_name $(_GT_RUN_NAME) \
 		--datasets $(_SAC_SEL_DATASETS) \
 		--seeds $(GRAND_TEST_SEEDS) --resume \
@@ -742,7 +792,7 @@ grand_test_resume_part0:
 		--device $(DEVICE)
 
 grand_test_resume_part1:
-	cd $(ROOT) && $(PYTHON) nlp/run_grand_test.py \
+	cd $(ROOT) && $(PYTHON) experiments/run_grand_test.py \
 		--run_name $(_GT_RUN_NAME) \
 		--datasets $(_SAC_SEL_DATASETS) \
 		--seeds $(GRAND_TEST_SEEDS) --resume \
@@ -753,7 +803,7 @@ grand_test_resume_part1:
 		--device $(DEVICE)
 
 grand_test_resume_part2:
-	cd $(ROOT) && $(PYTHON) nlp/run_grand_test.py \
+	cd $(ROOT) && $(PYTHON) experiments/run_grand_test.py \
 		--run_name $(_GT_RUN_NAME) \
 		--datasets $(_SAC_SEL_DATASETS) \
 		--seeds $(GRAND_TEST_SEEDS) --resume \
@@ -764,7 +814,7 @@ grand_test_resume_part2:
 		--device $(DEVICE)
 
 grand_test_resume_part3:
-	cd $(ROOT) && $(PYTHON) nlp/run_grand_test.py \
+	cd $(ROOT) && $(PYTHON) experiments/run_grand_test.py \
 		--run_name $(_GT_RUN_NAME) \
 		--datasets $(_SAC_SEL_DATASETS) \
 		--seeds $(GRAND_TEST_SEEDS) --resume \

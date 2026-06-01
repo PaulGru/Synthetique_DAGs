@@ -39,7 +39,7 @@ mpl.rcParams.update({
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-ROOT_GRAND_TEST = Path(__file__).parent / "plots" / "grand_test"
+ROOT_GRAND_TEST = Path(__file__).resolve().parents[1] / "results" / "grand_test"
 
 LAMBDAS = [50, 75, 100, 125]
 
